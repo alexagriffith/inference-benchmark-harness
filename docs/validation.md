@@ -4,7 +4,7 @@ Version 0.1.0 is a first operator package. It is not a capacity result or a cert
 
 | Check | Reproduce | Scope |
 |---|---|---|
-| Contract tests | `make test` | Local validation, sequential points, retained goal failures, checkpoint integrity and metric coverage |
+| Contract tests | `make test` | Local validation, sequential points, retained goal failures, checkpoint integrity, metric coverage and route/objective binding failures |
 | Actual AIPerf integration | `make test-integration AIPERF=/path/to/aiperf` | AIPerf 0.12.0 against a loopback streaming fixture; generated/file prompts, bearer auth, direct metrics, server failure and native sweep |
 | Operator readiness | `make verify CONFIG=/path/to/config.json` | Read configured resources and endpoints without inference |
 | Operator smoke | `make smoke CONFIG=/path/to/config.json RUN=/path/to/new-run` | One short request against the selected environment |

@@ -44,6 +44,26 @@ def load(path, smoke=False):
             if not target.get("name") or not target.get("namespace"):
                 raise ValueError("Each Deployment needs name and namespace")
             positive(target["replicas"], "replicas", integer=True)
+        if scope.get("routing"):
+            routing = scope["routing"]
+            for key in ("namespace", "route", "pool", "model_deployment"):
+                if not isinstance(routing.get(key), str) or not routing[key]:
+                    raise ValueError(f"Set kubernetes.routing.{key}")
+            if not routing.get("gateway", {}).get("name") or not routing["gateway"].get("namespace"):
+                raise ValueError("routing.gateway needs name and namespace")
+            verified = {(item["namespace"], item["name"]) for item in scope["deployments"]}
+            for key in ("model_deployment", "picker_deployment"):
+                if routing.get(key) and (routing["namespace"], routing[key]) not in verified:
+                    raise ValueError(f"Include routing.{key} in kubernetes.deployments for readiness checks")
+            if type(routing.get("rule_index", 0)) is not int or routing.get("rule_index", 0) < 0:
+                raise ValueError("rule_index must be a nonnegative integer")
+            names = set()
+            for objective in routing.get("objectives", []):
+                if not objective.get("name") or type(objective.get("priority")) is not int or objective["name"] in names:
+                    raise ValueError("Objectives need distinct names and integer priorities")
+                names.add(objective["name"])
+            if routing.get("selected_objective") and routing["selected_objective"] not in names:
+                raise ValueError("selected_objective must be listed in routing.objectives")
     endpoint = config["endpoint"]
     check_url(endpoint["url"])
     if urlsplit(endpoint["url"]).path not in ("", "/"):

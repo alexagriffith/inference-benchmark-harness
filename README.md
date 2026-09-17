@@ -23,7 +23,7 @@ make sweep CONFIG=/path/to/benchmark.json RUN=/path/to/first-sweep
 make report RUN=/path/to/first-sweep
 ```
 
-`plan` reads local configuration and prints commands. `verify` checks the runtime and reads the configured model listing, metrics and optional Kubernetes resources. Neither sends inference. `smoke` sends one generated request with a 16-token output limit. `sweep` uses your workload and runs concurrency points in order. Choose a new output directory for each campaign.
+`plan` reads local configuration and prints commands. `verify` checks the runtime and reads the configured model listing, metrics and optional Kubernetes readiness, route/pool and objective bindings. Neither sends inference. `smoke` sends one generated request with a 16-token output limit. `sweep` uses your workload and runs concurrency points in order. Choose a new output directory for each campaign.
 
 The example's 1/2/4 concurrency and 20-request limit qualify mechanics; they are not calibrated capacity settings. Each point stops sending at its request limit or duration, whichever comes first. Grace allows outstanding requests to finish; the outer deadline also bounds startup and export. There is no implicit warmup. Plan warmup, repeated measurements and longer steady windows before making performance claims.
 
@@ -59,6 +59,7 @@ Native artifacts can contain prompts, responses and operational metadata. Keepin
 - [Workstation and cluster execution](docs/run-locations.md)
 - [Metrics and New Relic](docs/metrics.md)
 - [Validation and current limits](docs/validation.md)
+- [Choose the next experiment](docs/next-steps.md)
 
 ```sh
 make test

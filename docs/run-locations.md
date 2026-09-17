@@ -34,7 +34,29 @@ Add this block when the runner has read access through kubectl:
 
 The runner reads Deployments and selected pods, checks rollout convergence and records image identities. It never scales them. Use your deployment owner to establish the experiment's replica count; preserve tensor parallelism, model, cache settings and other serving parameters. One replica may still use multiple GPUs.
 
-These checks do not prove custom gateway filters, objective bindings or the effective scheduling policy. Capture those through your deployment tools before making policy claims. The endpoint-only path remains available when the runner cannot use the Kubernetes API.
+To verify llm-d object bindings, add `routing` inside `kubernetes`:
+
+```json
+{
+  "routing": {
+    "namespace": "inference",
+    "model_deployment": "model-server",
+    "picker_deployment": "endpoint-picker",
+    "pool": "model-pool",
+    "route": "model-route",
+    "rule_index": 0,
+    "gateway": {"namespace": "gateway-system", "name": "inference-gateway"},
+    "objectives": [{"name": "interactive", "priority": 10}],
+    "selected_objective": "interactive"
+  }
+}
+```
+
+For this example, also set `endpoint.headers` to `{"x-llm-d-inference-objective":"interactive"}`. The runner verifies pool/model and picker-Service ownership, current Gateway/HTTPRoute acceptance, the selected rule's pool references, objective pool/priority bindings and the configured header. `rule_index` is zero-based. Confirm the actual request matches that rule's path, host and header conditions; the report includes its matches. All declared model/picker Deployments must also appear in the readiness list.
+
+An objective's missing or stale controller status is `unverified`, not a failed declared binding. A current explicit rejection fails the check. When a custom application maps a client field to an objective, omit `selected_objective` unless the benchmark directly sets the objective header; capture the actual classification separately.
+
+These checks do not prove custom filters, effective scheduling policy or actual request classification. Use matching gateway/router evidence from smoke for those claims. The endpoint-only path remains available when the runner cannot use the Kubernetes API. Kubernetes read permissions are needed for the selected namespaces' Deployments, pods, Services, Gateways, HTTPRoutes, InferencePools and InferenceObjectives; no write permission is used.
 
 ## In-cluster package
 
