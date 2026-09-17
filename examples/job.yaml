@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inference-benchmark-smoke
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: benchmark
+          image: registry.example.org/inference-benchmark-harness:0.1.0
+          args: ["run", "--config", "/inputs/benchmark.json", "--run", "/results/first-smoke", "--smoke", "--execute"]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {cpu: "4", memory: 8Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: inputs, mountPath: /inputs, readOnly: true}
+            - {name: results, mountPath: /results}
+            - {name: scratch, mountPath: /tmp}
+      volumes:
+        - name: inputs
+          persistentVolumeClaim: {claimName: benchmark-inputs}
+        - name: results
+          persistentVolumeClaim: {claimName: benchmark-results}
+        - name: scratch
+          emptyDir: {sizeLimit: 1Gi}
