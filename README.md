@@ -7,7 +7,11 @@ Run bounded AIPerf tests against an existing streaming Chat Completions endpoint
 Python 3.11+ on Linux or macOS. AIPerf is pinned to 0.12.0.
 
 ```sh
-python3 -m pip install '.[runtime]'
+git clone https://github.com/alexagriffith/inference-benchmark-harness.git
+cd inference-benchmark-harness
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install '.[runtime]'
 cp examples/benchmark.json /path/benchmark.json
 ```
 

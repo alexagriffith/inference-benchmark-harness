@@ -248,6 +248,11 @@ Inspect route `parentRefs`, host/path matches, filters and acceptance; use the r
 
 New Relic query/import, unit conversion and source-to-ingested metric mapping are not implemented adapters. Validate those externally for the exact collection path. Direct preflight currently validates metric names, not label attribution or full time-series semantics. Configuration changes do not alter historical results.
 
+
+## End a session
+
+Stop the benchmark process you launched; confirm outstanding requests and queues have drained. Preserve results before removing only this session's Jobs, tunnels, containers and temporary inputs. Verify those resources are gone. Shared model Deployments, Gateways, nodes and clusters are not part of benchmark cleanup; never scale them down as an implicit “shutdown.”
+
 ## Evidence and storage
 
 Each run directory contains configuration, state, events and a provenance ledger. Each attempt retains pre/postflight checks, command, execution outcome, AIPerf log, native exports, summary and checksums. Point summaries compare accepted repeats. Their p95 range is neither a pooled percentile nor a confidence interval.
