@@ -21,3 +21,7 @@ The final container passed 27 contract tests and the 33-request integration suit
 A process-lifecycle regression also verifies that an owned helper cannot keep serving after its parent exits, even when the helper ignores graceful termination. Final cleanup kills remaining members of the owned process group. This does not prove remote serving cancellation.
 
 The subsequent preview-budget and model-list diagnostic changes passed 29 workstation contract tests. The 27-test container result above predates those two additions; it is not a claim that all 29 were run in that image. The request execution path is unchanged by those additions.
+
+The subsequent adversarial review added malformed/nonfinite timing checks, optional postflight deployment identity comparison, meaningful report exit status and per-point attempt numbering. The current workstation suite has 38 tests. Real AIPerf integration passed 33 fixture requests during that review, before the final report/naming refinements; those refinements have dedicated contract tests. No new Docker, cluster Job or GPU performance qualification is implied.
+
+`plan` also reports the available startup/export margin beyond duration and grace. Choose it from observed behavior of your runtime. The process deadline bounds AIPerf, not all configuration reads, postflight queries or artifact hashing. Allocate the overall Job deadline accordingly.

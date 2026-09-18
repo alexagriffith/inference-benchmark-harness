@@ -16,7 +16,7 @@ from bench.config import load
 from bench.evidence import analyze, write_json
 from bench.runner import campaign, command, run_child
 from bench.preflight import fetch, verify
-from bench.kubernetes import inspect
+from bench.kubernetes import inspect, deployment_changes
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,7 +36,7 @@ class ContractTests(unittest.TestCase):
             "aiperf_version": "0.12.0", "schema_version": "1.4",
             "request_count": {"avg": 2}, "time_to_first_token": {"unit": "ms", "p95": 20}})
         row = {"metadata": {"request_start_ns": 100, "request_end_ns": 200},
-               "metrics": {"request_latency": 100}}
+               "metrics": {"request_latency": {"value": 100, "unit": "ms"}}}
         (native / "profile_export.jsonl").write_text((json.dumps(row) + "\n") * 2)
         return {"exit_code": 0, "reason": None}
 
@@ -45,6 +45,57 @@ class ContractTests(unittest.TestCase):
             args = command(self.config, 1, self.root / "unused", "aiperf")
         self.assertIn("--custom-endpoint", args)
         self.assertFalse((self.root / "unused").exists())
+
+    def test_report_exit_code_matches_campaign_status(self):
+        for status, code in (("complete", 0), ("preflight_failed", 2), ("evidence_invalid", 2), ("goal_not_met", 2)):
+            write_json(self.root / "state.json", {"status": status})
+            result = subprocess.run([sys.executable, "-m", "bench", "report", "--run", str(self.root)],
+                                    cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, code)
+            self.assertEqual(json.loads(result.stdout)["status"], status)
+
+    @patch("bench.runner.verify", return_value=[])
+    def test_first_attempt_is_numbered_one_for_each_point(self, verify):
+        with patch("bench.runner.run_child", side_effect=self.fixture):
+            state = campaign(self.config, self.root / "run", "aiperf")
+        self.assertEqual(state["completed"], ["point-01-attempt-001", "point-02-attempt-001"])
+
+    def test_error_timestamp_required_by_pinned_export_schema(self):
+        self.fixture([], self.root, 10, 0)
+        native = self.root / "native"
+        summary = json.loads((native / "profile_export_aiperf.json").read_text())
+        summary.update(request_count={"avg": 1}, error_request_count={"avg": 1})
+        write_json(native / "profile_export_aiperf.json", summary)
+        good = (native / "profile_export.jsonl").read_text().splitlines()[0]
+        failed = {"error": {"code": 503}, "metadata": {"request_start_ns": 150, "request_end_ns": 150}}
+        self.config["goals"] = {"max_error_fraction": .6}
+        (native / "profile_export.jsonl").write_text(good + "\n" + json.dumps(failed) + "\n")
+        result = analyze(self.root, self.config, {"exit_code": 0})
+        self.assertEqual(result["evidence"], "complete")
+        self.assertEqual(result["failed_requests"], 1)
+        self.assertEqual(result["goals"][0]["status"], "met")
+        del failed["metadata"]["request_end_ns"]
+        (native / "profile_export.jsonl").write_text(good + "\n" + json.dumps(failed) + "\n")
+        self.assertIn("invalid_request_timestamps", analyze(self.root, self.config, {"exit_code": 0})["reasons"])
+
+    def test_invalid_timestamp_cannot_pass_as_numeric(self):
+        self.fixture([], self.root, 10, 0)
+        path = self.root / "native/profile_export.jsonl"
+        row = json.loads(path.read_text().splitlines()[0])
+        for value in (float("nan"), "200", True):
+            row["metadata"]["request_end_ns"] = value
+            path.write_text((json.dumps(row) + "\n") * 2)
+            self.assertIn("invalid_request_timestamps", analyze(self.root, self.config, {"exit_code": 0})["reasons"])
+
+    def test_resume_preserves_older_attempt_numbers(self):
+        root = self.root / "run"
+        with patch("bench.runner.verify", return_value=[{"name": "fixture", "status": "fail"}]):
+            campaign(self.config, root, "aiperf")
+        (root / "point-01-attempt-001").rename(root / "point-01-attempt-004")
+        with patch("bench.runner.verify", return_value=[]), patch("bench.runner.run_child", side_effect=self.fixture):
+            state = campaign(self.config, root, "aiperf", True)
+        self.assertEqual(state["status"], "complete")
+        self.assertEqual(state["completed"][0], "point-01-attempt-005")
 
     def test_previews_distinguish_smoke_and_sweep_budgets(self):
         config_path = self.root / "config.json"
@@ -232,6 +283,54 @@ class ContractTests(unittest.TestCase):
         result = analyze(self.root, self.config, {"exit_code": 130, "reason": "interrupted"})
         self.assertEqual(result["evidence"], "invalid")
         self.assertIn("interrupted", result["reasons"])
+
+    def test_malformed_and_nonfinite_timings_are_not_results(self):
+        self.fixture([], self.root, 10, 0)
+        native = self.root / "native"
+        original = (native / "profile_export.jsonl").read_text()
+        for value in (float("nan"), -1, "100", None):
+            row = json.loads(original.splitlines()[0])
+            row["metrics"]["request_latency"]["value"] = value
+            (native / "profile_export.jsonl").write_text((json.dumps(row) + "\n") * 2)
+            self.assertIn("invalid_request_latency", analyze(self.root, self.config, {"exit_code": 0})["reasons"])
+        (native / "profile_export.jsonl").write_text(original)
+        (native / "profile_export_aiperf.json").write_text("[]")
+        self.assertEqual(analyze(self.root, self.config, {"exit_code": 0})["evidence"], "invalid")
+
+    def test_nonfinite_goal_is_not_a_performance_miss(self):
+        self.fixture([], self.root, 10, 0)
+        path = self.root / "native/profile_export_aiperf.json"
+        summary = json.loads(path.read_text())
+        summary["time_to_first_token"]["p95"] = float("nan")
+        write_json(path, summary)
+        self.config["goals"] = {"ttft_p95_ms": 100}
+        result = analyze(self.root, self.config, {"exit_code": 0})
+        self.assertEqual(result["evidence"], "invalid")
+        self.assertEqual(result["goals"][0]["status"], "unverified")
+
+    def test_deployment_replacement_or_restart_invalidates_identity(self):
+        before = [{"name": "engine", "status": "pass", "identity": [
+            {"uid": "original", "containers": [{"imageID": "sha256:one", "restartCount": 0}]}]}]
+        self.assertEqual(deployment_changes(before, copy.deepcopy(before)), [])
+        for field, value in (("imageID", "sha256:two"), ("restartCount", 1)):
+            after = copy.deepcopy(before)
+            after[0]["identity"][0]["containers"][0][field] = value
+            self.assertIn("deployment_identity_changed", deployment_changes(before, after))
+        after = copy.deepcopy(before)
+        after[0]["identity"][0]["uid"] = "replacement"
+        self.assertIn("deployment_identity_changed", deployment_changes(before, after))
+
+    @patch("bench.runner.verify", return_value=[])
+    def test_failed_postflight_stops_next_point(self, verify):
+        self.config["kubernetes"] = {"context": "fixture", "deployments": []}
+        with patch("bench.runner.run_child", side_effect=self.fixture) as child, patch(
+                "bench.kubernetes.inspect", return_value=[{"name": "engine", "status": "fail"}]):
+            state = campaign(self.config, self.root / "run", "aiperf")
+        self.assertEqual(child.call_count, 1)
+        self.assertEqual(state["status"], "evidence_invalid")
+        attempt = self.root / "run/point-01-attempt-001"
+        self.assertTrue((attempt / "postflight.json").exists())
+        self.assertIn("postflight_failed:engine", json.loads((attempt / "summary.json").read_text())["reasons"])
 
     @patch("bench.runner.verify", return_value=[])
     def test_attempt_budget_prevents_another_launch(self, verify):

@@ -35,6 +35,7 @@ def main():
             root = Path(args.run)
             result = {"state": json.loads((root / "state.json").read_text()),
                       "attempts": {str(path.parent.name): json.loads(path.read_text()) for path in sorted(root.glob("point-*/summary.json"))}}
+            result["status"] = result["state"]["status"]
         else:
             config = load(args.config, args.smoke)
             if args.action == "plan":
@@ -47,9 +48,10 @@ def main():
                         "max_requests_first_pass": requests,
                         "max_requests_with_manual_retries": requests * bounds.get("max_attempts_per_point", 3),
                         "process_deadline_seconds_per_attempt": bounds["deadline_seconds"],
+                        "startup_export_margin_seconds": bounds["deadline_seconds"] - bounds["duration_seconds"] - bounds["grace_seconds"],
                         "automatic_inference_retries": 0,
                     },
-                    "commands": [command(config, point, Path(args.run).resolve() / f"point-{index + 1:02d}-attempt-{index + 1:03d}", args.aiperf)
+                    "commands": [command(config, point, Path(args.run).resolve() / f"point-{index + 1:02d}-attempt-001", args.aiperf)
                                  for index, point in enumerate(points)],
                 }
             elif args.action == "verify":

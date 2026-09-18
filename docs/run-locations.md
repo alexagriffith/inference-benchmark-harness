@@ -70,13 +70,27 @@ The example has no Kubernetes API token and uses the endpoint-only path. Its ima
 For a local image check, build and run the fixture suite with an existing writable artifact directory. These commands contact only a loopback test server inside the container:
 
 ```sh
-podman build -t localhost/inference-benchmark-harness:0.1.0 .
-podman run --rm --read-only --tmpfs /tmp:rw,size=512m \
+docker build -f Containerfile -t inference-benchmark-harness:0.1.0 .
+docker run --rm --read-only --tmpfs /tmp:rw,size=512m \
   -v "$PWD/tests:/opt/harness/tests:ro" \
   -v "$PWD/examples:/opt/harness/examples:ro" \
   -v /path/to/test-artifacts:/results:rw -e TMPDIR=/results \
-  --entrypoint python localhost/inference-benchmark-harness:0.1.0 \
+  --entrypoint python inference-benchmark-harness:0.1.0 \
   tests/integration.py --aiperf /opt/venv/bin/aiperf
 ```
 
 The artifact mount must be writable by the container user (10001); configure ownership through your container runtime. Outputs remain in the mounted directory after the container exits. The multi-stage build includes a compiler for dependencies that lack a wheel on the selected architecture; the runtime image contains the installed Python environment without the compiler. A local container pass does not establish Kubernetes network or volume access.
+
+## Docker networking and current checks
+
+A container's loopback address belongs to the container, not its host. On Docker Desktop, `host.docker.internal` can address a host service, but verify the port-forward binding, route Host header and TLS hostname from inside the container. Linux host networking has different behavior. Prefer an approved directly reachable endpoint or a qualified in-cluster path. Do not expose a local tunnel on every interface as a routine workaround. See [Docker networking](https://docs.docker.com/desktop/features/networking/).
+
+The commands above are Docker instructions. The recorded Linux arm64 qualification was performed using Podman; Docker engine execution remains unverified.
+
+When Kubernetes checks are enabled, each attempt now saves `postflight.json` and rejects sampled pod/image/restart changes or failed postflight bindings. This is not continuous observation and does not capture full resource YAML or effective scheduling configuration. Endpoint-only mode has no Kubernetes identity check.
+
+## When the example image is not approved
+
+Use your approved Linux Python host or rebuild this package on an approved Python 3.11+ base using your registry and dependency mirror. Keep builder/runtime Python and system libraries compatible; adapt package-manager, user and directory conventions. A different base image requires requalification, not just a changed `FROM` line. Keep native compilers in the builder and input mounts read-only.
+
+If Docker on a workstation is unavailable, run the approved image as a cluster Job. If custom images are unavailable, install the package and pinned AIPerf runtime in an approved Linux virtual environment. Run the same contract tests, local fixture tests, endpoint verification and smoke in that environment. The included base image and Job example do not imply organizational approval.

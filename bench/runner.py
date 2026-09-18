@@ -121,14 +121,16 @@ def run_locked(config, root, aiperf, resume, lock_fd):
     points = load_points(config)
     for index in range(state["next_point"], len(points)):
         point = points[index]
-        if len(list(root.glob(f"point-{index + 1:02d}-attempt-*"))) >= config["load"].get("max_attempts_per_point", 3):
+        previous_attempts = list(root.glob(f"point-{index + 1:02d}-attempt-*"))
+        point_attempt = max((int(path.name.rsplit("-", 1)[1]) for path in previous_attempts), default=0) + 1
+        if len(previous_attempts) >= config["load"].get("max_attempts_per_point", 3):
             state["status"] = "attempt_budget_exhausted"
             write_json(root / "state.json", state)
             event(root, "attempt_budget_exhausted", point=index + 1, retryable=False,
                   action="Review the accumulated failures before planning another experiment")
             return state
         state["attempts"] += 1
-        directory = root / f"point-{index + 1:02d}-attempt-{state['attempts']:03d}"
+        directory = root / f"point-{index + 1:02d}-attempt-{point_attempt:03d}"
         directory.mkdir()
         checks = verify(config, aiperf)
         if shutil.disk_usage(root).free < 64 * 1024 * 1024:
@@ -168,6 +170,16 @@ def run_locked(config, root, aiperf, resume, lock_fd):
         execution = run_child(args, directory, config["load"]["deadline_seconds"], lock_fd)
         write_json(directory / "execution.json", execution)
         result = analyze(directory, config, execution)
+        if config.get("kubernetes"):
+            from .kubernetes import deployment_changes, inspect
+            after = inspect(config)
+            write_json(directory / "postflight.json", after)
+            changes = deployment_changes(checks, after)
+            if changes:
+                result["evidence"] = "invalid"
+                result["reasons"] = sorted(set(result["reasons"] + changes))
+                for goal in result["goals"]:
+                    goal["status"] = "unverified"
         write_json(directory / "summary.json", result)
         write_json(directory / "manifest.json", manifest(directory))
         if result["evidence"] != "complete":

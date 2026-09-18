@@ -61,3 +61,14 @@ def inspect(config):
         from .routing import inspect_routing
         checks.extend(inspect_routing(config))
     return checks
+
+
+def deployment_changes(before, after):
+    """Compare sampled pod identities; continuous stability needs monitoring."""
+    def identities(checks):
+        return {check["name"]: sorted(check["identity"], key=lambda pod: pod["uid"])
+                for check in checks if "identity" in check}
+    changes = ["postflight_failed:" + check["name"] for check in after if check["status"] == "fail"]
+    if identities(before) != identities(after):
+        changes.append("deployment_identity_changed")
+    return changes

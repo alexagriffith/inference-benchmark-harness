@@ -140,7 +140,7 @@ def load(path, smoke=False):
     for key in ("duration_seconds", "request_timeout_seconds", "grace_seconds", "deadline_seconds"):
         positive(bounds[key], key)
     if bounds["deadline_seconds"] <= bounds["duration_seconds"] + bounds["grace_seconds"]:
-        raise ValueError("deadline_seconds must allow duration, grace and startup")
+        raise ValueError("deadline_seconds must exceed duration plus grace; choose startup/export margin for your runtime")
     for metric in config.get("metrics", []):
         check_url(metric["url"])
         if not metric.get("name"):

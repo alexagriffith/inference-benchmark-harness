@@ -38,3 +38,9 @@ Use the failed attempt's `preflight.json`, `aiperf.log`, `summary.json` and nati
 | Timeout or eviction leaves partial files | Runner / storage / platform | Check the saved reason, free storage, Job termination status and surviving traffic | Operator and platform owner; recover artifacts and confirm drain before another attempt |
 
 [Interpret valid results and choose the next experiment](next-steps.md).
+
+The child inherits the campaign lock so an orphaned running client cannot silently permit a second owner. If a lock remains after supervisor loss, inspect and stop the specific owned processes through the platform's normal process/Job tools before recovery. Do not delete the lock file to bypass ownership. Descendants that escape the original process group are outside the tested cleanup guarantee.
+
+`report` returns nonzero for a saved campaign that is not complete. Inspect the returned status to distinguish invalid evidence, missed goals and unfinished work. New points number their first attempt 001; existing historical attempt numbers are preserved on resume.
+
+[Short troubleshooting table](troubleshooting.md)

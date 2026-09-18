@@ -76,6 +76,7 @@ Native artifacts can contain prompts, responses and operational metadata. Keepin
 - [Workstation and cluster execution](docs/run-locations.md)
 - [Metrics and New Relic](docs/metrics.md)
 - [Validation and current limits](docs/validation.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [Choose the next experiment](docs/next-steps.md)
 
 ```sh
