@@ -33,7 +33,19 @@ Use the [command sequence](../README.md#run) for each campaign. Use a separate c
 
 These are AIPerf export keys; see the [measurement selectors](metrics.md#client-evidence) for summary aliases and availability. Compare each repeat separately. Do not average p95 values into a campaign p95.
 
-Invalid evidence stops immediately. Valid goal misses or request errors finish the current point's repeats, then stop higher load. Use [recovery](#recovery) for deliberate resume. Changing the experiment requires a new campaign. Any positive replica count is supported; replicas are not GPU counts, and the harness does not scale them.
+### When the runner moves on
+
+| Result | Automatic action | Operator action |
+|---|---|---|
+| Checks pass; evidence valid; no request errors or declared goal misses | Save the repeat; run the next declared repeat or row | Review results before choosing a new experiment |
+| Required check/evidence fails, or mixed arrivals do not overlap enough | Stop; preserve the failed attempt | Diagnose, then explicitly resume within the saved attempt budget |
+| Process fails or exceeds its deadline | Stop and clean up owned client processes; reject the mixed group | Confirm serving queues drained; diagnose before resume |
+| Valid evidence misses a goal or contains request errors | Finish that point/row's repeats; stop before the next point/row | Inspect results; resume only deliberately |
+| Expected serving profile differs before traffic | Stop without sending traffic | Serving owner applies the planned profile; confirm readiness, then resume |
+| Serving profile changes during the repeat | Reject the group and stop | Restore a stable setup; rerun the whole group through resume |
+| Pause requested | Finish and validate the current matrix group, then checkpoint | Resume with unchanged inputs |
+
+Empty goals permit discovery; evidence checks and request-error stops remain active. No rule automatically concludes that a detector works, chooses a new limit, or changes serving policy. Those decisions require the relevant metrics and a controlled comparison. Changing the experiment requires a new campaign. Any positive replica count is supported; replicas are not GPU counts, and the harness does not scale them.
 
 ### Configuration ownership
 
@@ -94,7 +106,7 @@ Example only—replace these values with agreed application requirements:
 }
 ```
 
-These mean p95 time to first token at most 500 ms, p95 whole-request latency at most 5 seconds, and errors at most 1%. Latency and error goals are evaluated separately; an error is not a fast successful response. A p95 target is not a maximum-latency guarantee. Long answers need an appropriate whole-request target. Inter-token latency and per-workload-class goals are not implemented gates.
+These mean p95 time to first token at most 500 ms, p95 whole-request latency at most 5 seconds, and errors at most 1%. Latency and error goals are evaluated separately; an error is not a fast successful response. A p95 target is not a maximum-latency guarantee. Long answers need an appropriate whole-request target. Inter-token latency is not an implemented goal. Each matrix stream can supply its own goals; the harness does not classify records into additional workload classes within a stream.
 
 Omit a goal you have not agreed. Empty goals collect measurements without asserting a target pass. Three requests or 20 requests cannot establish reliable tail behavior; choose observation length and repeat count for the decision and observed variability. Set `load.repeats` (example: 3) and `load.max_attempts_per_repeat` (example: 3). A repeat is one measurement; a replacement attempt only repairs invalid execution.
 
