@@ -5,6 +5,10 @@ import tempfile
 import unittest
 import subprocess
 import sys
+import os
+import signal
+import socket
+import time
 from urllib.error import HTTPError
 from unittest.mock import patch
 
@@ -42,6 +46,40 @@ class ContractTests(unittest.TestCase):
         self.assertIn("--custom-endpoint", args)
         self.assertFalse((self.root / "unused").exists())
 
+    def test_finished_parent_cannot_leave_serving_descendant(self):
+        ready = self.root / "child.json"
+        child = ("import json,os,signal,socket,time; from pathlib import Path; "
+                 "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+                 "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); "
+                 f"Path({str(ready)!r}).write_text(json.dumps([os.getpid(),s.getsockname()[1]])); "
+                 "time.sleep(30)")
+        parent = ("import subprocess,sys,time; from pathlib import Path; "
+                  f"subprocess.Popen([sys.executable,'-c',{child!r}]); p=Path({str(ready)!r});\n"
+                  "while not p.exists(): time.sleep(.01)")
+        try:
+            with (self.root / "lock").open("w") as lock:
+                result = run_child([sys.executable, "-c", parent], self.root, 3, lock.fileno())
+            self.assertEqual(result["exit_code"], 0)
+            pid, port = json.loads(ready.read_text())
+            deadline = time.monotonic() + 1
+            while True:
+                try:
+                    connection = socket.create_connection(("127.0.0.1", port), timeout=0.1)
+                except ConnectionRefusedError:
+                    break
+                else:
+                    connection.close()
+                if time.monotonic() >= deadline:
+                    self.fail("Owned descendant still accepts connections after parent exit")
+                time.sleep(0.02)
+        finally:
+            if ready.exists():
+                pid = json.loads(ready.read_text())[0]
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
     def test_empty_dataset_fails_before_traffic(self):
         config = copy.deepcopy(self.config)
         (self.root / "empty.jsonl").write_text("")
@@ -55,6 +93,47 @@ class ContractTests(unittest.TestCase):
         args = command(self.config, 1, self.root, "aiperf")
         self.assertNotIn("--api-key", args)
         self.assertIn("--config", args)
+
+    def rate_config(self):
+        config = copy.deepcopy(self.config)
+        config["load"].pop("concurrency")
+        config["load"].update(rates=[0.5, 2], arrival="constant", max_concurrency=4)
+        return config
+
+    def test_rate_validation_and_smoke_override(self):
+        config = self.rate_config()
+        path = self.root / "rate.json"
+        write_json(path, config)
+        self.assertEqual(load(path)["load"]["rates"], [0.5, 2])
+        smoke = load(path, smoke=True)
+        self.assertEqual(smoke["load"]["concurrency"], [1])
+        self.assertNotIn("rates", smoke["load"])
+        for change in ({"concurrency": [1]}, {"rates": [0]}, {"arrival": "unknown"},
+                       {"max_concurrency": 0}, {"rates": [1, 1]}):
+            bad = copy.deepcopy(config)
+            bad["load"].update(change)
+            write_json(path, bad)
+            with self.assertRaises(ValueError):
+                load(path)
+
+    @patch("bench.runner.verify", return_value=[])
+    def test_rate_points_keep_cap_auth_phase_and_resume_identity(self, verify):
+        config = self.rate_config()
+        config["endpoint"]["api_key_env"] = "BENCH_API_KEY"
+        root = self.root / "rate-run"
+        with patch("bench.runner.run_child", side_effect=self.fixture) as child:
+            self.assertEqual(campaign(config, root, "aiperf")["status"], "complete")
+        for call, rate in zip(child.call_args_list, config["load"]["rates"]):
+            args, directory = call.args[:2]
+            self.assertEqual(args[args.index("--request-rate") + 1], str(rate))
+            self.assertEqual(args[args.index("--concurrency") + 1], "4")
+            native = json.loads((directory / "auth.yaml").read_text())["benchmark"]["phases"]
+            self.assertEqual(native, {"type": "constant", "rate": rate, "concurrency": 4, "requests": 2})
+        with patch("bench.runner.run_child", side_effect=AssertionError("replayed")):
+            self.assertEqual(campaign(config, root, "aiperf", True)["status"], "complete")
+        config["load"]["arrival"] = "poisson"
+        with self.assertRaisesRegex(ValueError, "changed"):
+            campaign(config, root, "aiperf", True)
 
     @patch("bench.runner.verify", return_value=[])
     def test_points_finish_before_next_starts_and_resume_skips(self, verify):

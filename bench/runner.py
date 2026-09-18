@@ -10,17 +10,18 @@ import signal
 import subprocess
 import time
 
-from .config import file_digest, fingerprint
+from .config import file_digest, fingerprint, load_points, phase
 from .evidence import analyze, manifest, write_json
 from .preflight import verify
 
 
-def command(config, concurrency, directory, aiperf):
+def command(config, point, directory, aiperf):
     endpoint, workload, bounds = config["endpoint"], config["workload"], config["load"]
+    traffic = phase(config, point)
     args = [aiperf, "profile", "--url", endpoint["url"], "--custom-endpoint", endpoint["path"],
             "--model", endpoint["model"], "--endpoint-type", "chat", "--streaming",
             "--tokenizer", workload.get("tokenizer", "builtin"), "--use-server-token-count",
-            "--concurrency", str(concurrency), "--request-count", str(bounds["requests"]),
+            "--concurrency", str(traffic["concurrency"]), "--request-count", str(bounds["requests"]),
             "--benchmark-duration", str(bounds["duration_seconds"]),
             "--benchmark-grace-period", str(bounds["grace_seconds"]),
             "--request-timeout-seconds", str(bounds["request_timeout_seconds"]),
@@ -28,6 +29,8 @@ def command(config, concurrency, directory, aiperf):
             "--record-processors", str(config.get("record_processors", 1)),
             "--no-gpu-telemetry", "--ui-type", "none", "--export-level", "records", "--no-auto-plot",
             "--output-artifact-dir", str(directory / "native")]
+    if "rate" in traffic:
+        args += ["--request-rate", str(traffic["rate"]), "--request-rate-mode", traffic["type"]]
     if workload["type"] == "single_turn":
         args += ["--input-file", workload["path"], "--custom-dataset-type", "single_turn"]
     else:
@@ -76,8 +79,13 @@ def run_child(args, directory, deadline, lock_fd):
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
+                pass
+            # A finished parent may still have descendants in its process group.
+            try:
                 os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+            except ProcessLookupError:
+                pass
+            process.wait()
     return {"start_unix": started, "end_unix": time.time(), "exit_code": code, "reason": reason}
 
 
@@ -110,8 +118,9 @@ def run_locked(config, root, aiperf, resume, lock_fd):
         write_json(root / "config.json", config)
     if state["status"] == "complete":
         return state
-    for index in range(state["next_point"], len(config["load"]["concurrency"])):
-        concurrency = config["load"]["concurrency"][index]
+    points = load_points(config)
+    for index in range(state["next_point"], len(points)):
+        point = points[index]
         if len(list(root.glob(f"point-{index + 1:02d}-attempt-*"))) >= config["load"].get("max_attempts_per_point", 3):
             state["status"] = "attempt_budget_exhausted"
             write_json(root / "state.json", state)
@@ -150,12 +159,12 @@ def run_locked(config, root, aiperf, resume, lock_fd):
                         "osl": {"mean": workload["output_tokens"], "stddev": 0}})
             write_json(directory / "auth.yaml", {"schemaVersion": "2.0", "benchmark": {
                 "endpoint": {"api_key": "${" + env_name + "}"}, "dataset": dataset,
-                "phases": {"type": "concurrency", "concurrency": concurrency, "requests": config["load"]["requests"]}}})
-        args = command(point_config, concurrency, directory, aiperf)
+                "phases": phase(config, point)}})
+        args = command(point_config, point, directory, aiperf)
         write_json(directory / "command.json", args)
         state["status"] = "running"
         write_json(root / "state.json", state)
-        event(root, "point_started", point=index + 1, attempt=directory.name, concurrency=concurrency)
+        event(root, "point_started", point=index + 1, attempt=directory.name, load=phase(config, point))
         execution = run_child(args, directory, config["load"]["deadline_seconds"], lock_fd)
         write_json(directory / "execution.json", execution)
         result = analyze(directory, config, execution)

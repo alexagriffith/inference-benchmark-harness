@@ -31,6 +31,19 @@ def check_url(value):
         raise ValueError("Use an HTTP(S) URL without credentials, query or fragment")
 
 
+def load_points(config):
+    bounds = config["load"]
+    return bounds["rates"] if "rates" in bounds else bounds["concurrency"]
+
+
+def phase(config, point):
+    bounds = config["load"]
+    if "rates" in bounds:
+        return {"type": bounds["arrival"], "rate": point,
+                "concurrency": bounds["max_concurrency"], "requests": bounds["requests"]}
+    return {"type": "concurrency", "concurrency": point, "requests": bounds["requests"]}
+
+
 def load(path, smoke=False):
     config = json.loads(Path(path).read_text())
     if config.get("schema_version") != 1:
@@ -107,11 +120,21 @@ def load(path, smoke=False):
         raise ValueError("Supported workload types: synthetic, single_turn")
     positive(workload["output_tokens"], "output_tokens", integer=True)
     bounds = config["load"]
-    points = bounds["concurrency"]
+    if ("concurrency" in bounds) == ("rates" in bounds):
+        raise ValueError("Choose exactly one load axis: concurrency or rates")
+    rate_mode = "rates" in bounds
+    axis = "rates" if rate_mode else "concurrency"
+    points = bounds[axis]
     if not isinstance(points, list) or not points or len(points) != len(set(points)):
-        raise ValueError("concurrency must be a nonempty list of distinct integers")
+        raise ValueError(f"{axis} must be a nonempty list of distinct values")
     for point in points:
-        positive(point, "concurrency", integer=True)
+        positive(point, axis, integer=not rate_mode)
+    if rate_mode:
+        positive(bounds.get("max_concurrency"), "max_concurrency", integer=True)
+        if bounds.get("arrival") not in ("constant", "poisson"):
+            raise ValueError("Rate mode needs arrival: constant or poisson")
+    elif "arrival" in bounds or "max_concurrency" in bounds:
+        raise ValueError("arrival and max_concurrency apply only to rate mode")
     positive(bounds["requests"], "requests", integer=True)
     positive(bounds.get("max_attempts_per_point", 3), "max_attempts_per_point", integer=True)
     for key in ("duration_seconds", "request_timeout_seconds", "grace_seconds", "deadline_seconds"):
@@ -135,5 +158,7 @@ def load(path, smoke=False):
             positive(value, key)
     if smoke:
         config["workload"] = {"type": "synthetic", "input_tokens": 16, "output_tokens": 16, "tokenizer": "builtin"}
+        for key in ("rates", "arrival", "max_concurrency"):
+            config["load"].pop(key, None)
         config["load"].update(concurrency=[1], requests=1)
     return config

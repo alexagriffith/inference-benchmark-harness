@@ -6,7 +6,7 @@ from pathlib import Path
 import signal
 import sys
 
-from .config import load
+from .config import load, load_points
 from .preflight import verify
 from .runner import campaign, command
 
@@ -39,7 +39,7 @@ def main():
             config = load(args.config, args.smoke)
             if args.action == "plan":
                 result = {"status": "plan_only", "commands": [command(config, point, Path(args.run).resolve() / f"point-{index + 1:02d}-attempt-{index + 1:03d}", args.aiperf)
-                          for index, point in enumerate(config["load"]["concurrency"])]}
+                          for index, point in enumerate(load_points(config))]}
             elif args.action == "verify":
                 result = {"checks": verify(config, args.aiperf)}
                 result["status"] = "preflight_failed" if any(c["status"] == "fail" for c in result["checks"]) else "ready_for_smoke"

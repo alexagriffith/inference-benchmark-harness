@@ -58,8 +58,25 @@ An objective's missing or stale controller status is `unverified`, not a failed 
 
 These checks do not prove custom filters, effective scheduling policy or actual request classification. Use matching gateway/router evidence from smoke for those claims. The endpoint-only path remains available when the runner cannot use the Kubernetes API. Kubernetes read permissions are needed for the selected namespaces' Deployments, pods, Services, Gateways, HTTPRoutes, InferencePools and InferenceObjectives; no write permission is used.
 
+Before comparing policies, the serving owner should record the actual picker image ID, startup arguments, mounted scheduling configuration and the version-specific loaded configuration reported by the process, when available. Compare the running pod with the deployment owner's intended configuration. Editing a ConfigMap or higher-level serving resource alone does not prove the process loaded it. If effective controls cannot be established, retain that uncertainty and do not attribute a latency change to a particular policy.
+
 ## In-cluster package
 
 Build `Containerfile` with your approved builder and publish the resulting image through your normal registry process. Adapt `examples/job.yaml` to your namespace, image and existing persistent volumes. Put the configuration and local dataset on the input volume; results go to the output volume. Use a unique run directory and Job name for each campaign.
 
 The example has no Kubernetes API token and uses the endpoint-only path. Its image must be supplied by the operator. It is a deployment template, not proof of compatibility with a particular cluster. Check mesh injection and sidecar completion behavior for batch Jobs; do not disable mutual TLS to work around a failed test. If custom CAs or per-producer metric authentication are required, use your approved network/identity path and qualify it with `verify` and `smoke`.
+
+
+For a local image check, build and run the fixture suite with an existing writable artifact directory. These commands contact only a loopback test server inside the container:
+
+```sh
+podman build -t localhost/inference-benchmark-harness:0.1.0 .
+podman run --rm --read-only --tmpfs /tmp:rw,size=512m \
+  -v "$PWD/tests:/opt/harness/tests:ro" \
+  -v "$PWD/examples:/opt/harness/examples:ro" \
+  -v /path/to/test-artifacts:/results:rw -e TMPDIR=/results \
+  --entrypoint python localhost/inference-benchmark-harness:0.1.0 \
+  tests/integration.py --aiperf /opt/venv/bin/aiperf
+```
+
+The artifact mount must be writable by the container user (10001); configure ownership through your container runtime. Outputs remain in the mounted directory after the container exits. The multi-stage build includes a compiler for dependencies that lack a wheel on the selected architecture; the runtime image contains the installed Python environment without the compiler. A local container pass does not establish Kubernetes network or volume access.

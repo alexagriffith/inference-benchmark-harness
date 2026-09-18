@@ -8,7 +8,7 @@ help:
 	@echo 'plan             Print commands without network requests or writes'
 	@echo 'verify           Read endpoint and metrics; send no inference'
 	@echo 'smoke            Send one short request'
-	@echo 'sweep            Run configured concurrency points sequentially'
+	@echo 'sweep            Run configured concurrency or rate points sequentially'
 	@echo 'resume           Continue a stopped campaign after reviewing its reason'
 	@echo 'report           Read saved results'
 	@echo 'test             Run contract tests without AIPerf or a cluster'

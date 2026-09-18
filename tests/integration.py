@@ -128,6 +128,33 @@ def main():
         exports = list(sweep_dir.rglob("profile_export_aiperf.json"))
         assert len(exports) == 2, [str(p) for p in exports]
         assert len(Handler.requests) == 18 + duration_requests, len(Handler.requests)
+        config["endpoint"]["api_key_env"] = "FIXTURE_API_KEY"
+        config["load"].pop("concurrency")
+        for arrival, rates in (("constant", [2, 4]), ("poisson", [4])):
+            config["load"].update(rates=rates, arrival=arrival, max_concurrency=2)
+            config_path = output / f"rate-{arrival}.json"
+            config_path.write_text(json.dumps(config))
+            run = output / f"rate-{arrival}"
+            before = len(Handler.requests)
+            cmd = [sys.executable, "-m", "bench", "run", "--config", str(config_path),
+                   "--run", str(run), "--aiperf", args.aiperf, "--execute"]
+            result = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=200)
+            commands.append({"case": f"rate-{arrival}", "command": cmd, "exit_code": result.returncode,
+                             "stdout": result.stdout, "stderr": result.stderr})
+            (output / "commands.json").write_text(json.dumps(commands, indent=2))
+            print(json.dumps({"case": f"rate-{arrival}", "exit_code": result.returncode, "output": str(run)}), flush=True)
+            assert result.returncode == 0, result.stdout + result.stderr
+            state = json.loads((run / "state.json").read_text())
+            assert state["status"] == "complete"
+            assert len(state["completed"]) == len(rates)
+            received = Handler.requests[before:]
+            assert len(received) == 3 * len(rates)
+            assert all(row["authorized"] for row in received)
+            if arrival == "constant":
+                # A broad bound detects an unpaced burst without requiring precise host timing.
+                for index, rate in enumerate(rates):
+                    point = received[index * 3:(index + 1) * 3]
+                    assert point[-1]["at"] - point[0]["at"] >= 0.6 * 2 / rate
         (output / "observed-requests.json").write_text(json.dumps(Handler.requests, indent=2))
         print(json.dumps({"status": "pass", "requests": len(Handler.requests), "artifacts": str(output)}))
     finally:

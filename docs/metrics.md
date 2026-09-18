@@ -43,3 +43,42 @@ If a signal is missing, report the producer, expected source metric, experiment 
 Red Hat AI Inference 3.5 documents vLLM, Endpoint Picker and platform monitoring in its [llm-d monitoring guide](https://docs.redhat.com/en/documentation/red_hat_ai_inference/3.5/html/monitor_and_troubleshoot_distributed_inference_with_llm-d_deployments/monitoring-llmd-deployments). vLLM and router signals come from those components; KServe lifecycle metrics are not required by this harness. Upstream and product deployments can differ in versions, enabled features, labels, monitoring discovery and transport. Observe the deployed components before treating two inventories as equivalent.
 
 Never derive router latency by subtracting independently aggregated percentiles. A client latency improvement alone does not prove priority or fairness; those comparisons require matched workloads, controls and server attribution.
+
+## Operator checklist
+
+Use the [metric reference](metric-reference.md) to choose the minimum evidence for the experiment. Complete this once for each producer and repeat after a version, replica or collector change.
+
+1. **Identify the source.** Record component version, pod or endpoint identity, approved metrics URL and access method. Reach it from the actual benchmark location. A laptop port-forward working does not prove a Job can reach it.
+2. **Inspect the raw metric.** Confirm the source name, type, unit and labels. A lazy counter absent before its first event is unknown, not a pre-existing zero. Require it only when the planned claim needs it.
+3. **Find it in New Relic.** Discover metric names and attributes instead of assuming the scrape name and pod labels survived ingestion. Check filters, relabeling and histogram conversion with the monitoring owner.
+4. **Check the time window.** Record UTC start/end, scrape interval, retention resolution and relevant gaps. Compare fresh samples from before, during and after the run. Choose an interval that can resolve the behavior being studied; a short smoke is not a time-series qualification.
+5. **Preserve attribution.** Keep per-replica identity and the priority/flow dimensions needed for the comparison. A service that alternates between engine pods is not a reliable per-pod counter source. Avoid counting duplicate collectors twice.
+6. **Record the limit.** If collection is incomplete, name the missing signal and the conclusion it prevents. Client smoke results can still be useful without GPU telemetry; a fairness claim needs demand and service attributed to the relevant flows.
+
+These read-only New Relic Query Language (NRQL) discovery examples follow the documented [metric discovery interface](https://docs.newrelic.com/docs/data-apis/understand-data/metric-data/query-metric-data-type/). Replace the placeholders and add the environment filter appropriate to your account:
+
+```sql
+FROM Metric SELECT uniques(metricName)
+WHERE (metricName LIKE 'vllm%' OR metricName LIKE 'llm_d_epp%')
+SINCE 30 minutes ago
+```
+
+```sql
+FROM Metric SELECT keyset()
+WHERE metricName = '<observed-ingested-metric-name>'
+SINCE 30 minutes ago
+```
+
+For the actual experiment, set the query time range to the saved UTC run window. A discovery result proves that data exists in the selected range, not that every replica or the full experiment was collected. Query the observed attributes; [integration-specific discovery](https://docs.newrelic.com/docs/infrastructure/prometheus-integrations/view-query-data/view-query-your-prometheus-data/) shows examples, but attribute names vary with the ingestion path. These queries are documentation-checked examples, not a verified account integration.
+
+When requesting a missing signal, use this short record:
+
+```text
+Question: Is waiting occurring inside the engine?
+Producer and version: <engine image / version>
+Source metric: vllm:num_requests_waiting (requests)
+Identity needed: each serving pod and engine
+Observed: <absent at source / present at source but absent in New Relic / stale>
+Consequence: engine queue pressure cannot be attributed during this run
+Next check and owner: <engine owner or monitoring owner, based on observed layer>
+```

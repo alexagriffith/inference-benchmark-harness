@@ -1,6 +1,6 @@
 # Inference benchmark harness
 
-Run a bounded AIPerf experiment against an existing streaming chat endpoint. Start with one short request, then run isolated concurrency points. Keep native evidence, structured failure events and resumable campaign state.
+Run a bounded AIPerf experiment against an existing streaming chat endpoint. Start with one short request, then run isolated concurrency or rate points. Keep native evidence, structured failure events and resumable campaign state.
 
 The operator runs this package in their own environment with their own dataset. No dashboard, Prometheus database, KServe or OpenShift installation is required. Linux and macOS are supported; Windows users can use a Linux environment.
 
@@ -23,7 +23,7 @@ make sweep CONFIG=/path/to/benchmark.json RUN=/path/to/first-sweep
 make report RUN=/path/to/first-sweep
 ```
 
-`plan` reads local configuration and prints commands. `verify` checks the runtime and reads the configured model listing, metrics and optional Kubernetes readiness, route/pool and objective bindings. Neither sends inference. `smoke` sends one generated request with a 16-token output limit. `sweep` uses your workload and runs concurrency points in order. Choose a new output directory for each campaign.
+`plan` reads local configuration and prints commands. `verify` checks the runtime and reads the configured model listing, metrics and optional Kubernetes readiness, route/pool and objective bindings. Neither sends inference. `smoke` sends one generated request with a 16-token output limit. `sweep` uses your workload and runs load points in order. Choose a new output directory for each campaign.
 
 The example's 1/2/4 concurrency and 20-request limit qualify mechanics; they are not calibrated capacity settings. Each point stops sending at its request limit or duration, whichever comes first. Grace allows outstanding requests to finish; the outer deadline also bounds startup and export. There is no implicit warmup. Plan warmup, repeated measurements and longer steady windows before making performance claims.
 
@@ -45,6 +45,22 @@ For a local JSONL dataset, replace the workload block:
 Each line contains `{"text":"A prompt","output_length":64}`. Paths are relative to the configuration file. A row's `output_length` can override the default; inspect these limits when preparing your workload. This version qualifies independent single-turn chat calls. Multi-turn conversations, raw application payloads, tools and arrival-time replay need separate adapters and tests.
 
 Optional `goals` supports `ttft_p95_ms`, `latency_p95_ms` and `max_error_fraction`. Use your actual targets; an empty object records measurements without claiming a performance pass. Optional `endpoint.headers` carries non-secret routing headers. Set `endpoint.api_key_env` to an environment variable name for bearer authentication. `endpoint.models_path` can be `null` when no listing API exists; model identity then remains unverified until smoke and server attribution.
+
+## Choose concurrency or arrival rate
+
+Use `load.concurrency: [1, 2, 4]` to maintain a selected number of outstanding requests. To prescribe arrivals instead, replace that field with:
+
+```json
+{
+  "rates": [0.5, 1, 2],
+  "arrival": "constant",
+  "max_concurrency": 4
+}
+```
+
+Keep the other `load` limits. Rates are requests per second; fractional values are allowed. Choose `constant` for regular arrivals or `poisson` for randomized arrivals at a target average. AIPerf performs the scheduling. The concurrency cap prevents unlimited outstanding work, so a rate target is not a guarantee of achieved arrivals under pressure. Inspect native request timestamps and actual throughput.
+
+Select exactly one axis per campaign. Points run sequentially in the supplied order with the same evidence and resume rules. `smoke` always uses one generated request at concurrency one, including with a rate configuration. These modes do not replay production arrival timestamps or prove that a synthetic workload represents production.
 
 ## Read the outcome
 
