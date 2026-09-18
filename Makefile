@@ -70,4 +70,4 @@ test-container:
 	  -v "$(CURDIR)/tests:/opt/harness/tests:ro" \
 	  -v "$(CURDIR)/examples:/opt/harness/examples:ro" \
 	  -v "$(abspath $(TEST_ARTIFACTS)):/results:rw" -e TMPDIR=/results \
-	  --entrypoint python "$(IMAGE)" -c 'import os, subprocess, sys; os.access("/results", os.W_OK) or sys.exit("TEST_ARTIFACTS must be writable by container UID 10001; choose an approved writable directory"); subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"], check=True); subprocess.run([sys.executable, "tests/integration.py", "--aiperf", "/opt/venv/bin/aiperf"], check=True)'
+	  --entrypoint python "$(IMAGE)" -c 'import os, subprocess, sys; os.access("/results", os.W_OK) or sys.exit("TEST_ARTIFACTS must be writable by container UID 10001; choose an approved writable directory"); subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"], check=True); subprocess.run([sys.executable, "tests/integration.py", "--aiperf", "/opt/venv/bin/aiperf"], check=True); subprocess.run([sys.executable, "tests/integration_matrix.py", "--aiperf", "/opt/venv/bin/aiperf"], check=True)'
