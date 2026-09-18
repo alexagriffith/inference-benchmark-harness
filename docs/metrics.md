@@ -30,6 +30,22 @@ Use first-token and inter-token timing for interactive streaming; add full-reque
 
 Report errors separately from successful-request latency. Keep native records and token counts so differences in request shape remain visible.
 
+## Mixed-repeat evidence
+
+Group `summary.json` keeps native full-run results under `streams` and recomputed arrival-cohort results under `shared_window`. They describe different populations.
+
+| Field | Source / unit | Purpose |
+|---|---|---|
+| `overlap.seconds` | Intersection of per-stream first/last request starts / seconds | Reject mixtures shorter than the declared common-arrival window |
+| `overlap.start_skew_seconds` | Latest minus earliest first request start / seconds | Reveal generator startup differences |
+| `overlap.arrivals_in_common_window` | Native starts within the inclusive interval / requests per stream | Confirm every stream contributes traffic |
+| `shared_window.<stream>.requests`, `failed_requests` | Selected records and terminal outcomes / requests | Preserve denominators and failures |
+| `shared_window.<stream>.measurements.ttft_p95_ms` | Nearest-rank p95 of valid successful-record TTFT / milliseconds | First-token behavior for the common arrival cohort |
+| `shared_window.<stream>.measurements.latency_p95_ms` | Nearest-rank p95 of complete successful-record durations / milliseconds | Full-response timing, including completions after the interval |
+| `shared_window.<stream>.measurements.error_fraction` | Failed cohort records / all cohort records / fraction | Error outcome for the same arrivals |
+
+`sample_counts` exposes valid versus expected successful samples; incomplete timing stays unknown. Native aggregate p95 may use a different estimator. Shared-window completion throughput is not calculated. See [window and tail limits](operator-guide.md#matrix-configuration) before attributing a change to competition or policy.
+
 ## Engine signals
 
 The observed engine labels include `model_name` and `engine`. Attach the scraped pod or endpoint identity separately: two pods can both call their engine `0`.
