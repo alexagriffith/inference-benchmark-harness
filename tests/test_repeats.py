@@ -82,6 +82,68 @@ class RepeatTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "goal_not_met")
         self.assertTrue(all(r["goals"][0]["status"] == "missed" for r in report["measurements"]))
 
+    def retained_failure_client(self, outcome):
+        def execute(*args):
+            result = self.client(*args)
+            native = args[1] / "native"
+            summary = json.loads((native / "profile_export_aiperf.json").read_text())
+            first_point = args[1].name.startswith("point-01-")
+            if outcome == "request_errors" and first_point:
+                summary.update(request_count={"avg": 0}, error_request_count={"avg": 1})
+                summary.pop("time_to_first_token")
+                row = {"error": {"code": 503},
+                       "metadata": {"request_start_ns": 100, "request_end_ns": 200}}
+                (native / "profile_export.jsonl").write_text(json.dumps(row) + "\n")
+            elif not first_point:
+                summary["time_to_first_token"]["p95"] = 5
+            write_json(native / "profile_export_aiperf.json", summary)
+            return result
+        return execute
+
+    def assert_unsuccessful_report(self, root, outcome):
+        import subprocess, sys
+        result = subprocess.run([sys.executable, "-m", "bench", "report", "--run", str(root)],
+                                capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout)["status"], outcome)
+
+    @patch("bench.runner.verify", return_value=[])
+    def test_resume_after_final_failure_preserves_outcome_without_traffic(self, verify):
+        self.config["load"]["concurrency"] = [1]
+        for outcome in ("goal_not_met", "request_errors"):
+            with self.subTest(outcome=outcome):
+                self.calls = []
+                root = self.root / outcome
+                self.config["goals"] = {"ttft_p95_ms": 10} if outcome == "goal_not_met" else {}
+                with patch("bench.runner.run_child", side_effect=self.retained_failure_client(outcome)):
+                    state = campaign(self.config, root, "unused")
+                self.assertEqual(state["status"], outcome)
+                self.assertEqual(len(self.calls), 3)
+                with patch("bench.runner.run_child", side_effect=AssertionError("completed point replayed")):
+                    state = campaign(self.config, root, "unused", resume=True)
+                self.assertEqual(state["status"], outcome)
+                self.assertEqual(state["next_point"], 1)
+                self.assert_unsuccessful_report(root, outcome)
+
+    @patch("bench.runner.verify", return_value=[])
+    def test_later_success_does_not_erase_retained_failure(self, verify):
+        for outcome in ("goal_not_met", "request_errors"):
+            with self.subTest(outcome=outcome):
+                self.calls = []
+                root = self.root / outcome
+                self.config["goals"] = {"ttft_p95_ms": 10} if outcome == "goal_not_met" else {}
+                with patch("bench.runner.run_child", side_effect=self.retained_failure_client(outcome)):
+                    stopped = campaign(self.config, root, "unused")
+                    self.assertEqual(stopped["status"], outcome)
+                    self.assertEqual(len(self.calls), 3)
+                    state = campaign(self.config, root, "unused", resume=True)
+                self.assertEqual(state["status"], outcome)
+                self.assertEqual(state["next_point"], 2)
+                self.assertEqual(state["point_results"], {"1": outcome, "2": "ready"})
+                self.assertEqual(len(self.calls), 6)
+                self.assertEqual(len(state["completed"]), 6)
+                self.assert_unsuccessful_report(root, outcome)
+
     @patch("bench.runner.verify", return_value=[{"status": "fail"}])
     def test_repeat_attempt_budget_blocks_additional_inference(self, verify):
         with patch("bench.runner.run_child", side_effect=AssertionError("traffic")):

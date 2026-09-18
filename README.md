@@ -13,46 +13,63 @@ cp examples/benchmark.json /path/benchmark.json
 
 Edit the copy before running:
 
-| Input | Set |
-|---|---|
-| `endpoint` | Reachable URL, served model, API path; routing headers and token environment variable if needed |
-| `workload` | Generated token lengths or a local single-turn JSONL file |
-| `load` | Concurrency **or** arrival-rate points, repeats and execution limits |
-| `goals` | Optional latency/error limits; keep `{}` for discovery |
-| `metrics` | Producer URLs and required metric names with their purpose |
-| `kubernetes` | Optional explicit context, expected replicas and routing checks |
+| Input | You supply | Example / omission behavior |
+|---|---|---|
+| `endpoint` | URL, served model, API path; required headers/authentication | Example uses localhost and a placeholder model; no headers or token |
+| `workload` | Representative token lengths or local single-turn JSONL | Synthetic 128 input / 64 output tokens; built-in tokenizer |
+| `load` | Load points, repeats and execution limits | Concurrency 1, 2, 4; three repeats. Omitting `repeats` uses **one** |
+| `goals` | Agreed latency/error limits, when known | `{}` collects a baseline without a target pass |
+| `metrics` | Required producer URLs, names and purpose | `[]` collects no server metrics; insufficient for flow-control claims |
+| `kubernetes` | Context, expected replicas and routing objects if inspecting the cluster | Omitted: no Kubernetes identity/routing checks |
 
-Example values check mechanics; choose representative inputs and bounded load for your experiment. [Operator guide](docs/operator-guide.md) · [Metric reference](docs/metrics.md).
+Example budgets: **20 requests or 60 seconds per repeat**, 30-second request timeout, 35-second grace and 180-second process deadline. Three attempts per repeat are allowed through deliberate recovery; inference is not automatically retried. These are mechanics values, not calibrated workload or capacity recommendations. See [defaults and fixed behavior](docs/operator-guide.md#defaults-and-fixed-behavior).
 
 ## Run
 
-From the checkout, use separate durable output directories:
+From the checkout, replace `/path/...` with your config and durable output paths. Complete each check before the next step; preserve failures and use [debugging](docs/operator-guide.md#debugging) if a command fails.
 
-```sh
-make plan-smoke CONFIG=/path/benchmark.json RUN=/path/results/smoke
-make verify CONFIG=/path/benchmark.json
-make smoke CONFIG=/path/benchmark.json RUN=/path/results/smoke
-make plan CONFIG=/path/benchmark.json RUN=/path/results/sweep
-make benchmark CONFIG=/path/benchmark.json RUN=/path/results/sweep
-make report RUN=/path/results/sweep
-```
+1. Preview the smoke command and budget; confirm the endpoint and inputs.
 
-| Command | Behavior |
-|---|---|
-| `plan`, `plan-smoke` | Preview commands and request budgets; no network or writes |
-| `verify` | Read runtime, model listing, metrics and optional Kubernetes checks; no inference |
-| `smoke` | One generated request, at most 16 output tokens |
-| `benchmark` / `sweep` | Sequential points × repeats; check each attempt before continuing |
-| `report` | Read saved status; incomplete or unsuccessful campaigns return nonzero |
-| `resume` | Deliberately continue the same config and run directory after diagnosis |
+   ```sh
+   make plan-smoke CONFIG=/path/benchmark.json RUN=/path/results/smoke
+   ```
+
+2. Verify access, runtime and required metrics. Continue only when the result is `ready_for_smoke`.
+
+   ```sh
+   make verify CONFIG=/path/benchmark.json
+   ```
+
+3. Send one short smoke request. Check its evidence; establish [cache/warmup and drain conditions](docs/operator-guide.md#run-sequence) before measuring.
+
+   ```sh
+   make smoke CONFIG=/path/benchmark.json RUN=/path/results/smoke
+   ```
+
+4. Preview the measured sweep, then execute the reviewed budget in a separate directory.
+
+   ```sh
+   make plan CONFIG=/path/benchmark.json RUN=/path/results/sweep
+   make benchmark CONFIG=/path/benchmark.json RUN=/path/results/sweep
+   ```
+
+5. Read the saved status and repeat summaries. An incomplete or unsuccessful campaign returns nonzero; `complete` without goals does not establish suitability.
+
+   ```sh
+   make report RUN=/path/results/sweep
+   ```
+
+`make help` lists commands. Plans send no traffic or network requests; `verify` reads endpoints but sends no inference. `benchmark` is an alias for `sweep`.
 
 The example uses **three valid repeats per point**. Invalid evidence stops immediately. A valid goal miss or request error is retained; remaining repeats at that point finish before higher load is stopped. Inference is never automatically retried. See [recovery](docs/operator-guide.md#recovery) before using `make resume CONFIG=/path/benchmark.json RUN=/path/results/sweep`.
 
 ## Scope and evidence
 
-One configuration describes one workload, endpoint and fixed topology. The harness does not deploy, scale or tune serving policies. No KServe, OpenShift or Prometheus database is required. Multi-turn, tools, Responses API, arrival-time replay, coordinated endpoints and New Relic querying are outside V1.
+One configuration describes one workload, endpoint and fixed topology. The harness does not deploy, scale or tune serving policies. No KServe, OpenShift or Prometheus database is required. Coordinated mixed workloads/endpoints, multi-turn, tools, Responses API, arrival-time replay and New Relic querying are outside V1.
 
 Results retain native AIPerf files, config, commands, checks, summaries and timestamped provenance. Native files may contain prompts and operational data; keep them in your environment and select what to share. [Storage and timestamps](docs/operator-guide.md#evidence-and-storage).
+
+Before handoff, follow the [qualification checklist](docs/operator-guide.md#handoff-check). Keep this README as the command entry point, the [operator guide](docs/operator-guide.md) for decisions/configuration/recovery, and the [metric reference](docs/metrics.md) for names, units and purpose.
 
 ## Test
 

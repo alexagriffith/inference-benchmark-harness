@@ -1,0 +1,7 @@
+**
+!Containerfile
+!pyproject.toml
+!README.md
+!LICENSE
+!bench/
+!bench/*.py

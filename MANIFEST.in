@@ -1,4 +1,4 @@
-include Makefile Containerfile
+include Makefile Containerfile .dockerignore .gitignore
 recursive-include examples *.json *.jsonl *.yaml
 recursive-include docs *.md
 recursive-include tests *.py

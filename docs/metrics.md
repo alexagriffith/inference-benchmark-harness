@@ -15,6 +15,19 @@ AIPerf 0.12.0 exports `profile_export_aiperf.json` (schema 1.4) and `profile_exp
 | `request_count`, `error_request_count` | Successful and failed request counts; requests | Reconcile the aggregate with native records |
 | Record `metadata.request_start_ns`, `request_end_ns` | Request timestamps, nanoseconds | Align client activity and server collection |
 
+
+For experiment decisions, name the statistic as well as the metric:
+
+| Decision | Exact measurement | Where to read it |
+|---|---|---|
+| How long before the answer starts? | `time_to_first_token.p95`, ms | Native aggregate; harness alias `ttft_p95_ms` |
+| Does the stream pause? | `inter_token_latency.p95`, ms | Native aggregate if exported; no V1 goal or summary alias |
+| How long until the answer finishes? | `request_latency.p95`, ms | Native aggregate; harness alias `latency_p95_ms` |
+| How many requests complete per second? | `request_throughput.avg`, requests/s | Native aggregate; harness alias `request_throughput_rps` |
+| How much traffic fails? | Failed records / all request records, fraction | Harness `error_fraction`; show numerator and denominator |
+
+Use first-token and inter-token timing for interactive streaming; add full-request duration when completion time is the question. Keep output lengths comparable. Missing measurements are unknown, not zero. These statistics are per repeat; their variation is not a pooled percentile or confidence interval.
+
 Report errors separately from successful-request latency. Keep native records and token counts so differences in request shape remain visible.
 
 ## Engine signals

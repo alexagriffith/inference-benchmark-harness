@@ -250,7 +250,9 @@ def run_locked(config, root, aiperf, resume, lock_fd):
         write_json(root / "state.json", state)
         if state["status"] != "ready":
             return state
-    state["status"] = "complete"
+    outcomes = state["point_results"].values()
+    state["status"] = ("goal_not_met" if "goal_not_met" in outcomes else
+                       "request_errors" if "request_errors" in outcomes else "complete")
     write_json(root / "state.json", state)
     event(root, "campaign_complete", points=len(points), valid_repeats=len(state["completed"]))
     return state

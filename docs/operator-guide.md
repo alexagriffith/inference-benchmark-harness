@@ -2,6 +2,8 @@
 
 A campaign answers: **How does this workload behave across the tested load points on this fixed deployment?** Goals add acceptance limits; they are not required to collect a baseline.
 
+[V1 sequence](#matrix-and-next-steps) · [Configure inputs](#configuration-ownership) · [Debug](#debugging) · [Resume](#recovery) · [Later: mixed load](#mixed-load-next-capability)
+
 ## Run sequence
 
 `plan → verify → smoke → inspect/drain → benchmark → report`
@@ -9,6 +11,62 @@ A campaign answers: **How does this workload behave across the tested load point
 Within a benchmark: `check → run → validate → checkpoint`, repeated for every repeat at every point. One Python supervisor invokes AIPerf child processes; these modules are not separate pods. AIPerf generates traffic and exports measurements. The supervisor decides whether to continue.
 
 A smoke checks the request path; it does not warm every replica or establish steady state. Before measured runs, the operator establishes cache/warmup conditions and confirms earlier traffic has drained. Keep model/image, tensor parallelism, replica count, route, serving limits and run location fixed. Save the serving owner's effective configuration separately; a declared object does not prove a process loaded it.
+
+## Matrix and next steps
+
+**V1 path:** verify → smoke → each workload alone → review → choose the next campaign. Coordinated [mixed-load experiments](#mixed-load-next-capability) follow these references and are not implemented in V1.
+
+One config expands to **load points × repeats**. The example `[1, 2, 4]` with three repeats produces nine measurements. These are mechanics values, not calibrated capacity limits. `make plan` prints the actual commands and request budget. Sending ends at the request count or duration, whichever comes first; grace lets outstanding responses finish. The process deadline includes startup/export, but not all checks or hashing.
+
+### Runnable now
+
+Use the [command sequence](../README.md#run) for each campaign. Use a separate configuration copy and result directory for each workload or changed experiment. Hold the deployment, routing, cache preparation, input distribution and measurement method fixed within a sweep.
+
+| Question | Keep unchanged | Action | Evidence / next step |
+|---|---|---|---|
+| Are inputs reachable? | Intended endpoint and execution location | Configure inputs; run `verify` | Resolve failed checks before traffic |
+| Does this request take the right path? | Route, model and intended identity | Run `smoke`; inspect and drain | Corroborate classification if required; HTTP 200 alone is insufficient |
+| How does interactive traffic behave? | Workload, serving configuration and cache preparation | Sweep `load.concurrency` | Compare `time_to_first_token.p95` (ms), `request_throughput.avg` (requests/s) and failed/total requests; inspect `inter_token_latency.p95` (ms) for streaming pauses |
+| How does another workload behave alone? | Deployment and measurement method | Copy config; replace `workload` and choose its bounded range | Retain the same measurements per workload; use `request_latency.p95` (ms) when full-response completion matters |
+| Does an operating point meet the target? | Workload, route and topology | Add agreed `goals`; refine points or choose `load.rates` | Check `time_to_first_token.p95` / `request_latency.p95` (ms) against selected goals and failed/total requests against the error limit; inspect record start timestamps for achieved arrivals |
+| What changes with more replicas? | Model, parallelism, other policies and comparison traffic | Owner changes replicas; update expected count; start a new campaign | Verify identities; compare `time_to_first_token.p95` (ms), `request_throughput.avg` (requests/s), error fraction and per-replica `vllm:request_success_total` deltas |
+
+These are AIPerf export keys; see the [measurement selectors](metrics.md#client-evidence) for summary aliases and availability. Compare each repeat separately. Do not average p95 values into a campaign p95.
+
+Invalid evidence stops immediately. Valid goal misses or request errors finish the current point's repeats, then stop higher load. Use [recovery](#recovery) for deliberate resume. Changing the experiment requires a new campaign. Any positive replica count is supported; replicas are not GPU counts, and the harness does not scale them.
+
+### Configuration ownership
+
+| Input | V1 choice / reason | Where it changes |
+|---|---|---|
+| Prompt shape, output limit, tokenizer | Representative generated input or local single-turn rows; characterize separately first | `workload` |
+| Offered load | Concurrency for an initial capacity curve; constant/Poisson rate when independent arrivals are the question | `load.concurrency` **or** `load.rates`, `arrival`, `max_concurrency` |
+| Repeats and budgets | Example has three repeats; choose enough data for the claim and bound execution | `load.repeats`, request/time limits, `max_attempts_per_repeat` |
+| Application goals | `{}` for discovery; add agreed latency/error limits for suitability | `goals`; see [targets](#targets) |
+| Route and class | Use the intended model/path/headers; verify actual classification where required | `endpoint`; optional `kubernetes.routing` checks |
+| Metric evidence | Configure required producers/names before making claims that depend on them | `metrics`; see [metric reference](metrics.md) |
+| Fixed topology | Verify expected replicas and identities; record model, parallelism and cache conditions | Optional `kubernetes.deployments`; serving owner controls deployment |
+| Serving plugins | Preserve the effective detector, ceiling, ordering, filter and scoring configuration during baseline comparisons | Serving owner's version-matched config; not harness fields |
+
+Flow-control gate comparisons are optional, separate campaigns. Record all effective changes: disabling the gate does not establish that every detector/filter is inactive. Benchmark `goals` evaluate client results; serving InferenceObjectives classify requests. They are separate inputs.
+
+
+
+## Defaults and fixed behavior
+
+The [example config](../examples/benchmark.json) explicitly supplies the experiment values; they are not an automatically selected matrix. Omitted `repeats` means one; omitted attempt limit means three. Set both explicitly. Load points execute in the listed order, without adaptive search.
+
+The runner fixes streaming Chat Completions, random seed 42 and server token-count reporting. Dedicated GPU telemetry and automatic plots are disabled; native records and configured server metrics are retained. The default tokenizer is `builtin` and record-processor count is one. Smoke replaces the workload with one synthetic 16-input/16-output-token request at concurrency one, with one repeat; configured time budgets remain.
+
+Choose only header names supported by the deployed version. No legacy aliases are injected automatically. Use `endpoint.api_key_env` for bearer credentials; token acquisition/refresh is outside the runner. A custom classifier may intentionally overwrite caller headers: verify its resolved objective rather than bypassing it. Neither upstream images nor running in a Job establishes the required authentication or mesh identity.
+
+## Handoff check
+
+- Rehearse README commands and relevant debugging steps from the intended run location; record expected output, config edits and saved artifacts. Label fixture/lab checks separately from customer checks.
+- Qualify endpoint authentication, classification where required, metric names/units/labels, replica identity and durable storage. Confirm warmup/drain and realistic measurement budgets.
+- Give the operator a reviewed config, results, stop/resume instructions and the next experiment from the matrix above. Qualify the actual image/Job if that is the chosen execution path.
+
+Passing runner tests makes a candidate reviewable; these checks establish whether an operator can use it independently. Mixed-workload coordination remains a later capability.
 
 ## Workload
 
@@ -58,20 +116,6 @@ Keep the remaining `load` limits. A binding cap can prevent the desired arrival 
 
 **Starting procedure:** smoke at one; choose a conservative, bounded increasing range; inspect the first valid target miss before adding load. If pass/fail points bracket a useful boundary, try intermediate points in a new campaign. Repeat near that boundary; do not assume noisy results are monotonic. A valid unfavorable result remains evidence. No automatic midpoint search or warmup is performed.
 
-
-## Matrix and next steps
-
-One config expands to **load points × repeats**. `[1, 2, 4]` with three repeats produces nine measurements. `make plan` prints the commands and request budget. A request count or duration ends sending, whichever comes first; grace allows outstanding requests to finish. The process deadline includes AIPerf startup and export, but not all pre/postflight reads or hashing. Give a Job sufficient overall time.
-
-| Evidence | Next experiment |
-|---|---|
-| Verify or smoke fails | Fix the named check; preserve the failed attempt |
-| Discovery sweep completes without goals | Inspect latency, throughput, errors and variation; agree targets before judging suitability |
-| Target met or missed near a boundary | Test a bounded intermediate range in a new campaign; retain unfavorable results |
-| Another fixed replica count is needed | Operator changes deployment, waits for readiness, updates expected replicas and starts a new campaign |
-| Priority or fairness is the question | Plan overlapping demand and suitable equal-priority/isolated controls outside this single-workload runner |
-
-Any positive expected replica count is supported. Replicas are not GPU counts: tensor parallelism and device sharing determine GPU use. The harness neither scales nor coordinates multiple configurations. Benchmark `goals` evaluate client latency/errors; Kubernetes InferenceObjectives classify requests. They are separate inputs. A disabled flow-control gate does not prove every detector/filter is inactive.
 
 ## Kubernetes checks
 
@@ -137,14 +181,11 @@ Use `http://127.0.0.1:8000` from the host. Forward individual metric producers s
 Build the supplied multi-stage image with your approved builder:
 
 ```sh
-docker build -f Containerfile -t inference-benchmark-harness:0.1.0 .
-docker run --rm --read-only --tmpfs /tmp:rw,size=512m \
-  -v "$PWD/tests:/opt/harness/tests:ro" \
-  -v "$PWD/examples:/opt/harness/examples:ro" \
-  -v /path/to/test-artifacts:/results:rw -e TMPDIR=/results \
-  --entrypoint python inference-benchmark-harness:0.1.0 \
-  tests/integration.py --aiperf /opt/venv/bin/aiperf
+make image IMAGE=inference-benchmark-harness:0.1.0
+make test-container IMAGE=inference-benchmark-harness:0.1.0 TEST_ARTIFACTS=/path/to/test-artifacts
 ```
+
+`test-container` runs unit and real AIPerf fixture tests in the built image; it sends no model traffic. Set `CONTAINER_ENGINE=podman` for an approved Podman installation. The output directory must be writable by container UID 10001; the target checks this before testing.
 
 Results must be writable by UID 10001. Adapt [the Job example](../examples/job.yaml) to an approved image and existing input/output PVCs. It uses no API token, requires no GPU and disables Job retries. The default image contains no kubectl: enable Kubernetes checks only in an environment providing kubectl and the required read permissions. Check sidecar completion, CA trust and network policy; preserve required mutual TLS.
 
@@ -158,9 +199,11 @@ If the base image is unavailable or unapproved, rebuild on an approved Python 3.
 | Wrong model, rejected authentication, unready deployment or missing required metric | Stop before inference | Restore the planned precondition, then resume; changed experiment configuration needs a new run |
 | AIPerf exits unsuccessfully, exceeds its deadline or leaves incomplete exports | Stop and preserve the attempt | Inspect logs and evidence; deliberate resume makes a new attempt |
 | Interrupt or termination signal | Terminate the process group owned by this run and save the outcome | Inspect the partial attempt before resume |
-| Valid measurement misses a goal or includes request errors | Retain it, finish the declared repeats at this load, then stop before higher load | Resume advances after those repeats, without rerunning accepted results |
+| Valid measurement misses a goal or includes request errors | Retain it, finish the declared repeats at this load, then stop before higher load | Resume advances after those repeats, without rerunning accepted results; prior goal misses/errors remain in the final campaign status |
 | Previous supervisor vanished without a checkpoint | Refuse automatic recovery | Reconcile running processes and evidence; use a new campaign after resolving ownership |
 | Configuration, dataset or accepted evidence changed | Refuse to skip or resume under the old identity | Create a new experiment with the changed inputs |
+
+For a failed smoke, use `make resume-smoke CONFIG=/path/to/benchmark.json RUN=/path/to/results/smoke`; ordinary `resume` uses the full workload and will reject the smoke configuration identity.
 
 Inference traffic is never automatically retried. Each repeat permits three attempts by default, including preflight failures; configure `load.max_attempts_per_repeat` before the campaign. The legacy `max_attempts_per_point` name remains accepted when the new name is absent. Reaching this limit calls for diagnosis. The harness does not generate runtime patches, alter serving configuration or loosen goals.
 
@@ -177,6 +220,18 @@ The client inherits the campaign lock. Do not delete a lock file to bypass owner
 
 Run `make verify CONFIG=/path/to/benchmark.json`. It reads configured targets without inference and prints named checks, discovered `metric_names`, and any `missing` requirements. Save its JSON output with your run notes. There is no separate `debug` command.
 
+
+For raw diagnosis, fill these placeholders from the existing deployment. These commands read resources; they do not create a Gateway or change routing.
+
+```sh
+kubectl --context YOUR_CONTEXT --request-timeout=15s -n YOUR_NAMESPACE get httproute YOUR_ROUTE -o yaml
+kubectl --context YOUR_CONTEXT --request-timeout=15s -n YOUR_NAMESPACE get service YOUR_METRICS_SERVICE -o yaml
+kubectl --context YOUR_CONTEXT --request-timeout=15s -n YOUR_NAMESPACE get pods -l YOUR_MODEL_SELECTOR -o wide
+curl --fail --silent --show-error --max-time 10 'http://YOUR_REACHABLE_PRODUCER:PORT/metrics'
+```
+
+Inspect route `parentRefs`, host/path matches, filters and acceptance; use the referenced Gateway's namespace when it differs. Service ports/selectors identify the intended producer, but do not prove per-pod metric coverage. Run the metric read from the benchmark's network location using approved authentication and CA trust. Expect metric names, labels and values—not HTML or a login response. Use the same raw sample to check `metrics[].required`; an absent lazy series may need a separate triggering smoke before it can become required.
+
 | Symptom | Inspect | Action |
 |---|---|---|
 | Required name missing | `metric_names`, `missing`, producer URL and actual exporter version | If the new name has equivalent meaning, edit `metrics[].required[].metric`; keep `why`. A changed config starts a new run. |
@@ -185,6 +240,9 @@ Run `make verify CONFIG=/path/to/benchmark.json`. It reads configured targets wi
 | HTTP 401/403 or TLS failure | Identity, certificate trust and approved route | Correct access. Inference bearer credentials do not configure metric-producer authentication. |
 | Monitoring samples missing/stale | Collector status, ingestion lag, query filters and exact run window | Missing is not zero. Hold claims needing that evidence; direct collection can be used when approved. |
 | Model-list 404 | Gateway routes and `endpoint.models_path` | If listing is intentionally absent, set it to null; verify the served model using smoke and server evidence. No KServe dependency is assumed. |
+| HTTP 200 but wrong/default priority | Actual router classification; header spelling for the deployed version; objective-to-pool binding; gateway header filters | Correct `endpoint.headers` for a direct classification test, or the trusted classifier mapping for an end-to-end test. A client header alone is not proof. |
+| Inference 404 / no engine traffic | Request host/path, HTTPRoute `parentRefs`, selected Gateway address and route acceptance | Use the existing route's intended Gateway. Do not create another Gateway to make a benchmark pass. |
+| Header changes between client and router | Route `RequestHeaderModifier` and custom filters/classifier; intended header owner | Preserve deliberate policy overwrites. Check resolved objective/fairness at the router; correlate IDs if the gateway replaces client request IDs. |
 | Native export incomplete | `execution.json`, `aiperf.log`, native directory and storage | Preserve the attempt; diagnose before deliberate resume. |
 | Pod replaced/restarted | `preflight.json` and `postflight.json` when enabled | Reestablish a stable deployment; preserve the invalid run and plan a fresh comparison. |
 
@@ -209,3 +267,24 @@ Native exports can contain prompts and operational data even when raw-response e
 Acquisitions, errors and saved artifacts are recorded in `provenance.jsonl`. Acquisition times describe when the runner read a config or endpoint, not when the remote configuration changed. Native files keep their original format; provenance records when they were observed and hashed. Use AIPerf's request/scrape times for measurement.
 
 Use durable output storage with working advisory locks and atomic rename. Collect evidence before deleting a Job or its volumes. Hard failure can occur between a save and its ledger entry; absent provenance is not reconstructed. Clock synchronization is required across hosts. JavaScript readers should display UTC text or use lossless integers for nanosecond timestamps. The ledger hashes prior state versions but does not archive every overwritten state file.
+
+## Mixed load: next capability
+
+Keep interactive demand at a chosen isolated operating point. Add one competing workload and sweep **its** request rate while holding the interactive rate, workload shapes, topology and serving policy fixed. Compare the interactive stream’s `time_to_first_token.p95` and `inter_token_latency.p95` (ms), `request_throughput.avg` (requests/s), successful completions and error fraction with its isolated reference. Inspect per-class `llm_d_epp_flow_control_queue_size` (requests), window p95 of `llm_d_epp_flow_control_request_queue_duration_seconds` (seconds), and per-replica `vllm:num_requests_waiting` (requests). Derive achieved arrivals from native record start timestamps; completion throughput is a different measurement. Equal treatment is the control before testing differentiated priorities. [AIPerf's load reference](https://docs.nvidia.com/aiperf/benchmark-modes/load-generator-options-reference) explains rate versus concurrency scheduling; this harness remains pinned to 0.12.0 and exposes only the modes listed above.
+
+| Experiment | Change | Why / next decision |
+|---|---|---|
+| Interactive + one competitor | Sweep competitor rate; repeat separately for each relevant competitor | Identify which workload causes interference before combining them |
+| Add a third/fourth workload | Fix the existing rates; sweep the newly added rate | Find the additional effect of that workload |
+| Full steady mixture | Fix workload proportions; sweep total offered rate | Measure the representative mix's operating range |
+| Detector calibration, when admission is the question | Fix a discriminating traffic mixture; compare bounded detector limits | Require valid accounting and evidence that the configured gate actually engaged |
+| Priority comparison | Hold traffic, detector, shared ceiling and routing fixed; compare equal versus intended priorities | Measure protection and lower-priority progress; do not infer causality from different prompt lengths |
+| Later, only for a remaining question | Change holdback, fairness, endpoint filtering/scoring or burst shape one at a time | Diagnose the remaining delay or sharing problem; retain the previous control |
+
+These rows are experiment recipes, not executable mixed-matrix inputs. A coordinated runner still needs overlapping measurement windows, per-stream config/results, whole-group failure handling, repeats and checkpoints. Starting unrelated benchmark processes does not supply that contract. Request-rate mixtures need achieved-arrival checks; concurrency ratios do not establish request-rate ratios.
+
+## Keep the guide and evidence aligned
+
+This section owns the experiment sequence and reasons; configuration files own runnable values. `bench/config.py` validates supported inputs, `make plan` expands them, and saved summaries/state own outcomes. Reuse those outputs in a dashboard instead of copying values into another decision graph. The public package has no live dashboard adapter or adaptive experiment selector.
+
+For each manual next-step decision, retain the prior run/point, observed metrics with units, changed field/value, reason or rule, UTC time and decision owner beside the run evidence. “Insufficient evidence” is a valid conclusion. V1 does not automatically author these takeaways or accept decision metadata as benchmark config fields. When a supported option changes, update its validator, relevant behavior test and this guide together; rerun the documented plan examples.
