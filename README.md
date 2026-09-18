@@ -67,9 +67,21 @@ From the checkout, replace `/path/...` with your config and durable output paths
 
 The example uses **three valid repeats per point**. Invalid evidence stops immediately. A valid goal miss or request error is retained; remaining repeats at that point finish before higher load is stopped. Inference is never automatically retried. See [recovery](docs/operator-guide.md#recovery) before using `make resume CONFIG=/path/benchmark.json RUN=/path/results/sweep`.
 
+## Several workloads or experiments
+
+Copy `examples/matrix.json`, `benchmark.json` and `background.json` together; edit their endpoint, workload and budgets. The matrix runs each row's streams together and checkpoints whole repeats.
+
+```sh
+make matrix-plan MATRIX=/path/matrix.json RUN=/path/results/matrix
+make matrix-run MATRIX=/path/matrix.json RUN=/path/results/matrix
+make report RUN=/path/results/matrix
+```
+
+`matrix-pause` finishes the current group before pausing. `matrix-resume` rechecks inputs and continues after accepted groups; use the same `MATRIX` and `RUN`. Invalid peers or insufficient traffic overlap invalidate the whole repeat. See [matrix configuration and policy comparisons](docs/operator-guide.md#matrix-configuration).
+
 ## Scope and evidence
 
-One configuration describes one workload, endpoint and fixed topology. The harness does not deploy, scale or tune serving policies. No KServe, OpenShift or Prometheus database is required. Coordinated mixed workloads/endpoints, multi-turn, tools, Responses API, arrival-time replay and New Relic querying are outside V1.
+One workload config describes one stream. A matrix combines streams and explicit experiments, with optional observed serving-profile gates for detector/filter comparisons. The harness does not deploy, scale or choose serving parameters. No KServe, OpenShift or Prometheus database is required. Multi-turn, tools, Responses API, arrival-time replay and New Relic querying are outside this package.
 
 Results retain native AIPerf files, config, commands, checks, summaries and timestamped provenance. Native files may contain prompts and operational data; keep them in your environment and select what to share. [Storage and timestamps](docs/operator-guide.md#evidence-and-storage).
 
@@ -80,6 +92,7 @@ Before handoff, follow the [qualification checklist](docs/operator-guide.md#hand
 ```sh
 make test
 make test-integration AIPERF=/path/to/aiperf
+make test-matrix AIPERF=/path/to/aiperf
 ```
 
 Integration uses real AIPerf against a local simulated server, with no GPU or cluster. It checks payloads, authentication, pacing, repeats, metric collection and failure handling. It does not establish model performance or deployment compatibility. [Container and Job instructions](docs/operator-guide.md#execution-environment).

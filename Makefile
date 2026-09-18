@@ -5,9 +5,14 @@ AIPERF ?= aiperf
 CONTAINER_ENGINE ?= docker
 IMAGE ?= inference-benchmark-harness:0.1.0
 TEST_ARTIFACTS ?= $(CURDIR)/.container-test-results
+MATRIX ?= examples/matrix.json
 
 .PHONY: benchmark help plan plan-smoke verify smoke sweep resume report test test-integration resume-smoke image test-container
 help:
+	@echo 'matrix-plan      Preview named experiments, concurrent streams and total budget'
+	@echo 'matrix-run       Run MATRIX, checkpointing whole mixed repeats'
+	@echo 'matrix-resume    Resume MATRIX after diagnosing the saved stop reason'
+	@echo 'matrix-pause     Finish the current group, then pause at a checkpoint'
 	@echo 'plan             Print commands without network requests or writes'
 	@echo 'plan-smoke       Preview the one-request smoke and its budget'
 	@echo 'verify           Read endpoint and metrics; send no inference'
@@ -43,6 +48,18 @@ test-integration:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/integration.py --aiperf "$(AIPERF)"
 
 benchmark: sweep
+
+.PHONY: matrix-plan matrix-run matrix-resume matrix-pause test-matrix
+matrix-plan:
+	$(PYTHON) -m bench matrix-plan --config "$(MATRIX)" --run "$(RUN)" --aiperf "$(AIPERF)"
+matrix-run:
+	$(PYTHON) -m bench matrix-run --config "$(MATRIX)" --run "$(RUN)" --aiperf "$(AIPERF)" --execute
+matrix-resume:
+	$(PYTHON) -m bench matrix-run --config "$(MATRIX)" --run "$(RUN)" --aiperf "$(AIPERF)" --execute --resume
+matrix-pause:
+	$(PYTHON) -m bench matrix-pause --run "$(RUN)"
+test-matrix:
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/integration_matrix.py --aiperf "$(AIPERF)"
 
 image:
 	$(CONTAINER_ENGINE) build -f Containerfile -t "$(IMAGE)" .

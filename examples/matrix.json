@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "name": "workload-comparison",
+  "repeats": 3,
+  "max_attempts_per_repeat": 3,
+  "min_overlap_seconds": 5,
+  "stages": [
+    {
+      "id": "interactive-alone",
+      "question": "How does the interactive workload behave alone?",
+      "change": "Sweep interactive arrival rate; keep serving configuration fixed.",
+      "streams": {
+        "interactive": {
+          "config": "benchmark.json",
+          "load": {
+            "rates": [
+              0.5,
+              1
+            ],
+            "arrival": "constant",
+            "max_concurrency": 4
+          }
+        }
+      }
+    },
+    {
+      "id": "interactive-with-background",
+      "question": "How does background demand affect interactive timing?",
+      "change": "Hold interactive at 0.5 requests/s; sweep background arrival rate.",
+      "streams": {
+        "interactive": {
+          "config": "benchmark.json",
+          "load": {
+            "rates": [
+              0.5
+            ],
+            "arrival": "constant",
+            "max_concurrency": 4
+          }
+        },
+        "background": {
+          "config": "background.json",
+          "load": {
+            "rates": [
+              0.5,
+              1
+            ],
+            "arrival": "constant",
+            "max_concurrency": 4
+          }
+        }
+      }
+    }
+  ]
+}

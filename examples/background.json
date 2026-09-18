@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "endpoint": {
+    "url": "http://localhost:8000",
+    "path": "/v1/chat/completions",
+    "models_path": "/v1/models",
+    "model": "served-model"
+  },
+  "workload": {
+    "type": "synthetic",
+    "input_tokens": 256,
+    "output_tokens": 128,
+    "tokenizer": "builtin"
+  },
+  "load": {
+    "concurrency": [
+      1
+    ],
+    "requests": 20,
+    "duration_seconds": 60,
+    "request_timeout_seconds": 30,
+    "grace_seconds": 35,
+    "deadline_seconds": 180,
+    "repeats": 1,
+    "max_attempts_per_repeat": 3
+  },
+  "metrics": [],
+  "goals": {}
+}

@@ -2,7 +2,7 @@
 
 A campaign answers: **How does this workload behave across the tested load points on this fixed deployment?** Goals add acceptance limits; they are not required to collect a baseline.
 
-[V1 sequence](#matrix-and-next-steps) · [Configure inputs](#configuration-ownership) · [Debug](#debugging) · [Resume](#recovery) · [Later: mixed load](#mixed-load-next-capability)
+[V1 sequence](#matrix-and-next-steps) · [Configure inputs](#configuration-ownership) · [Debug](#debugging) · [Resume](#recovery) · [Mixed load](#mixed-load)
 
 ## Run sequence
 
@@ -14,7 +14,7 @@ A smoke checks the request path; it does not warm every replica or establish ste
 
 ## Matrix and next steps
 
-**V1 path:** verify → smoke → each workload alone → review → choose the next campaign. Coordinated [mixed-load experiments](#mixed-load-next-capability) follow these references and are not implemented in V1.
+**Experiment path:** verify → smoke → each workload alone → mixed traffic → declared policy comparisons. [Matrices](#matrix-configuration) execute explicit rows and repeats; operators choose the next experiment.
 
 One config expands to **load points × repeats**. The example `[1, 2, 4]` with three repeats produces nine measurements. These are mechanics values, not calibrated capacity limits. `make plan` prints the actual commands and request budget. Sending ends at the request count or duration, whichever comes first; grace lets outstanding responses finish. The process deadline includes startup/export, but not all checks or hashing.
 
@@ -66,7 +66,7 @@ Choose only header names supported by the deployed version. No legacy aliases ar
 - Qualify endpoint authentication, classification where required, metric names/units/labels, replica identity and durable storage. Confirm warmup/drain and realistic measurement budgets.
 - Give the operator a reviewed config, results, stop/resume instructions and the next experiment from the matrix above. Qualify the actual image/Job if that is the chosen execution path.
 
-Passing runner tests makes a candidate reviewable; these checks establish whether an operator can use it independently. Mixed-workload coordination remains a later capability.
+Passing runner tests makes a candidate reviewable; these checks establish whether an operator can use it independently. Matrix handoff also requires observed overlap, per-stream classification and reviewed serving-profile observers.
 
 ## Workload
 
@@ -274,7 +274,7 @@ Acquisitions, errors and saved artifacts are recorded in `provenance.jsonl`. Acq
 
 Use durable output storage with working advisory locks and atomic rename. Collect evidence before deleting a Job or its volumes. Hard failure can occur between a save and its ledger entry; absent provenance is not reconstructed. Clock synchronization is required across hosts. JavaScript readers should display UTC text or use lossless integers for nanosecond timestamps. The ledger hashes prior state versions but does not archive every overwritten state file.
 
-## Mixed load: next capability
+## Mixed load
 
 Keep interactive demand at a chosen isolated operating point. Add one competing workload and sweep **its** request rate while holding the interactive rate, workload shapes, topology and serving policy fixed. Compare the interactive stream’s `time_to_first_token.p95` and `inter_token_latency.p95` (ms), `request_throughput.avg` (requests/s), successful completions and error fraction with its isolated reference. Inspect per-class `llm_d_epp_flow_control_queue_size` (requests), window p95 of `llm_d_epp_flow_control_request_queue_duration_seconds` (seconds), and per-replica `vllm:num_requests_waiting` (requests). Derive achieved arrivals from native record start timestamps; completion throughput is a different measurement. Equal treatment is the control before testing differentiated priorities. [AIPerf's load reference](https://docs.nvidia.com/aiperf/benchmark-modes/load-generator-options-reference) explains rate versus concurrency scheduling; this harness remains pinned to 0.12.0 and exposes only the modes listed above.
 
@@ -287,10 +287,71 @@ Keep interactive demand at a chosen isolated operating point. Add one competing 
 | Priority comparison | Hold traffic, detector, shared ceiling and routing fixed; compare equal versus intended priorities | Measure protection and lower-priority progress; do not infer causality from different prompt lengths |
 | Later, only for a remaining question | Change holdback, fairness, endpoint filtering/scoring or burst shape one at a time | Diagnose the remaining delay or sharing problem; retain the previous control |
 
-These rows are experiment recipes, not executable mixed-matrix inputs. A coordinated runner still needs overlapping measurement windows, per-stream config/results, whole-group failure handling, repeats and checkpoints. Starting unrelated benchmark processes does not supply that contract. Request-rate mixtures need achieved-arrival checks; concurrency ratios do not establish request-rate ratios.
+Represent these recipes as explicit matrix stages below. The coordinator preserves each stream and validates a common arrival window. Request-rate mixtures still need achieved-arrival checks; concurrency ratios do not establish request-rate ratios. It does not select detector limits or infer causality.
 
 ## Keep the guide and evidence aligned
 
-This section owns the experiment sequence and reasons; configuration files own runnable values. `bench/config.py` validates supported inputs, `make plan` expands them, and saved summaries/state own outcomes. Reuse those outputs in a dashboard instead of copying values into another decision graph. The public package has no live dashboard adapter or adaptive experiment selector.
+This section owns the experiment sequence and reasons; configuration files own runnable values. `bench/config.py` validates supported inputs, `make plan` expands them, and saved summaries/state own outcomes. Reuse those outputs in a dashboard instead of copying values into another decision graph. The public package has no dashboard or adaptive experiment selector.
 
 For each manual next-step decision, retain the prior run/point, observed metrics with units, changed field/value, reason or rule, UTC time and decision owner beside the run evidence. “Insufficient evidence” is a valid conclusion. V1 does not automatically author these takeaways or accept decision metadata as benchmark config fields. When a supported option changes, update its validator, relevant behavior test and this guide together; rerun the documented plan examples.
+
+
+## Matrix configuration
+
+`examples/matrix.json` references ordinary workload configs. A stage has a question, a changed variable and named concurrent streams. Each stream can override `load` fields; endpoint, headers, dataset and goals stay in its workload config.
+
+```json
+{
+  "schema_version": 1,
+  "name": "interactive-with-background",
+  "repeats": 3,
+  "max_attempts_per_repeat": 3,
+  "min_overlap_seconds": 5,
+  "stages": [{
+    "id": "background-sweep",
+    "question": "Does background demand delay interactive responses?",
+    "change": "Hold interactive rate; sweep background rate.",
+    "streams": {
+      "interactive": {"config": "interactive.json", "load": {
+        "rates": [0.5], "arrival": "constant", "max_concurrency": 4}},
+      "background": {"config": "background.json", "load": {
+        "rates": [0.5, 1, 2], "arrival": "constant", "max_concurrency": 4}}
+    }
+  }]
+}
+```
+
+These numbers demonstrate configuration, not calibrated limits. This expands to three rows × three repeats × two streams. Multiple non-singleton axes form a Cartesian product; `matrix-plan` shows every row and total request budget before execution. Maximums are eight streams per row, 1,000 expanded rows and 100 repeats. Choose request/time budgets long enough to obtain the declared overlap and useful samples. No automatic warmup, midpoint search or workload selection occurs.
+
+All streams pass checks before any starts. They launch together but are **not synchronized at the first request**. Each repeat requires a shared observed arrival window: latest first request start through earliest last request start, including both bounds. The window must meet `min_overlap_seconds`, and every stream must contribute arrivals. Missing overlap invalidates the whole repeat.
+
+`summary.json` separates `streams` (full native runs) from `shared_window` (requests arriving in the common interval). Shared results retain full response durations, including completions after the window; report nearest-rank p95 TTFT/request latency in milliseconds, error fraction and sample counts. This is an arrival cohort, not proof of constant contention throughout every response. Tail responses may finish after another workload stops sending. Do not use full-run throughput as common-window throughput or treat tiny fixture samples as reliable p95 estimates. Native p95 and shared nearest-rank p95 may use different estimators.
+
+Any invalid stream or missing overlap stops the matrix. A process failure/deadline cancels all owned peers. An invalid group has **zero accepted streams**; deliberate resume reruns every stream in a new group attempt. A valid goal miss in either full-run or shared-window results, or any request errors, completes that row's repeats then stops before the next row. Earlier misses remain visible after resume.
+
+```sh
+make matrix-pause RUN=/path/results/matrix
+make matrix-resume MATRIX=/path/matrix.json RUN=/path/results/matrix
+```
+
+Pause finishes the current group and validates it before checkpointing. Interrupt cancels the group instead. Neither action proves serving queues drained: inspect them before resume. An unfinished `running`/`checking` checkpoint after a crash refuses blind replay. Resume requires unchanged matrix, source config files, dataset identities, expected profiles and accepted evidence. Planned input changes require a new matrix directory.
+
+### Detector and filter stages
+
+Use `"kind": "policy"` and a named `"profile"` on a stage. Define that profile under top-level `profiles`:
+
+```json
+"profiles": {
+  "candidate": {
+    "expected": "expected-policy.json",
+    "observe": ["/approved/read-effective-policy", "--json"],
+    "deadline_seconds": 30
+  }
+}
+```
+
+The observer is an operator-supplied **read-only command**, passed as an argv array without a shell. Review it before execution; matrix files are executable configuration, not safe untrusted input. It must return stable JSON describing the effective serving controls under test. `expected-policy.json` contains the exact expected JSON. Include version, detector limits, ceiling and filter wiring that matter; exclude credentials, timestamps, counters and unrelated changing fields. A ConfigMap read alone does not prove the running process loaded it. There is no universal observer for custom serving controllers.
+
+The runner saves the observation and checks exact JSON equality before and after each repeat. A precheck mismatch stops with `profile_mismatch` **before traffic**. The serving owner applies the planned change, confirms readiness and loaded configuration, then runs `matrix-resume`. A postcheck mismatch invalidates the group. The package never applies serving changes or trusts a filename as proof of the deployed policy.
+
+To compare detector limits or filters: create one stage per expected profile, keep the stream configs and load points identical, and name the one changed field in `change`. To sweep two parameters, list the intended profile combinations explicitly. The runner automates all traffic rows for the current profile; transitions requiring a serving change stop for the owner. This supports repeatable comparisons without silently changing the cluster. Policy effectiveness still requires the relevant router/engine metrics and actual classification evidence.

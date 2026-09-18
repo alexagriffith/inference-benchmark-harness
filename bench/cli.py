@@ -27,17 +27,44 @@ def main():
             child.add_argument("--resume", action="store_true")
     report = sub.add_parser("report")
     report.add_argument("--run", required=True)
+    pause = sub.add_parser("matrix-pause")
+    pause.add_argument("--run", required=True)
+    for name in ("matrix-plan", "matrix-run"):
+        child = sub.add_parser(name)
+        child.add_argument("--config", required=True)
+        child.add_argument("--run", required=True)
+        child.add_argument("--aiperf", default="aiperf")
+        if name == "matrix-run":
+            child.add_argument("--execute", action="store_true", required=True)
+            child.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     def interrupted(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        if args.action == "report":
+        if args.action == "matrix-pause":
+            from .evidence import write_json
+            root = Path(args.run).resolve()
+            state = json.loads((root / "state.json").read_text())
+            if state.get("kind") != "matrix" or state["status"] == "complete":
+                raise ValueError("Choose an unfinished matrix")
+            write_json(root / "pause-request.json", {"requested": timestamp()})
+            result = {"status": "pause_requested", "detail": "Finish and validate the current group, then pause before starting another"}
+        elif args.action in ("matrix-plan", "matrix-run"):
+            from .matrix import load_matrix, matrix_campaign, plan_matrix
+            acquired = {"started": timestamp()}
+            config = load_matrix(args.config)
+            acquired["finished"] = timestamp()
+            result = (plan_matrix(config, args.run, args.aiperf) if args.action == "matrix-plan" else
+                      matrix_campaign(config, args.run, args.aiperf, args.resume, acquired))
+        elif args.action == "report":
             root = Path(args.run)
             result = {"state": json.loads((root / "state.json").read_text()),
                       "attempts": {str(path.parent.name): json.loads(path.read_text()) for path in sorted(root.glob("point-*/summary.json"))}}
             result["points"] = {path.stem: json.loads(path.read_text()) for path in sorted(root.glob("point-*-repeats.json"))}
             result["status"] = result["state"]["status"]
+            if result["state"].get("kind") == "matrix":
+                result["groups"] = {p.parent.name: json.loads(p.read_text()) for p in sorted(root.glob("row-*/summary.json"))}
         else:
             acquired = {"started": timestamp()}
             config = load(args.config, args.smoke)
@@ -66,7 +93,7 @@ def main():
             else:
                 result = campaign(config, args.run, args.aiperf, args.resume, config_acquisition=acquired)
         print(json.dumps({**result, "reported": timestamp()}, indent=2))
-        return 0 if result.get("status", "complete") in ("complete", "ready_for_smoke", "plan_only") else 2
+        return 0 if result.get("status", "complete") in ("complete", "ready_for_smoke", "plan_only", "pause_requested") else 2
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"{timestamp()['timestamp_utc']} Cannot continue: {exc}", file=sys.stderr)
         return 2

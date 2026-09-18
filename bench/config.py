@@ -59,7 +59,11 @@ def phase(config, point):
 
 
 def load(path, smoke=False):
-    config = json.loads(Path(path).read_text())
+    return validate(json.loads(Path(path).read_text()), Path(path).resolve().parent, smoke)
+
+
+def validate(config, base, smoke=False):
+    """Validate an in-memory config; resolve dataset paths from its source folder."""
     if config.get("schema_version") != 1:
         raise ValueError("Expected schema_version 1")
     positive(config.get("record_processors", 1), "record_processors", integer=True)
@@ -112,7 +116,7 @@ def load(path, smoke=False):
             raise ValueError("Use api_key_env for credentials")
     workload = config["workload"]
     if workload["type"] == "single_turn":
-        data = Path(path).resolve().parent / workload["path"]
+        data = Path(base) / workload["path"]
         lines = 0
         with data.open() as stream:
             for line in stream:
