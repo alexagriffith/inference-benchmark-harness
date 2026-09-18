@@ -15,7 +15,7 @@ from unittest.mock import patch
 from bench.config import load
 from bench.evidence import analyze, write_json
 from bench.runner import campaign, command, run_child
-from bench.preflight import fetch
+from bench.preflight import fetch, verify
 from bench.kubernetes import inspect
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +45,24 @@ class ContractTests(unittest.TestCase):
             args = command(self.config, 1, self.root / "unused", "aiperf")
         self.assertIn("--custom-endpoint", args)
         self.assertFalse((self.root / "unused").exists())
+
+    def test_previews_distinguish_smoke_and_sweep_budgets(self):
+        config_path = self.root / "config.json"
+        write_json(config_path, self.config)
+        for target, points, requests in (("plan", 2, 4), ("plan-smoke", 1, 1)):
+            run = self.root / target
+            args = [sys.executable, "-m", "bench", "plan", "--config", str(config_path),
+                    "--run", str(run), "--aiperf", "not-installed"]
+            if target == "plan-smoke":
+                args.append("--smoke")
+            result = subprocess.run(args,
+                                    cwd=ROOT, capture_output=True, text=True, check=True)
+            plan = json.loads(result.stdout)
+            self.assertEqual(plan["budget"]["points"], points)
+            self.assertEqual(plan["budget"]["max_requests_first_pass"], requests)
+            self.assertEqual(plan["budget"]["max_requests_with_manual_retries"], 3 * requests)
+            self.assertEqual(len(plan["commands"]), points)
+            self.assertFalse(run.exists())
 
     def test_finished_parent_cannot_leave_serving_descendant(self):
         ready = self.root / "child.json"
@@ -93,6 +111,16 @@ class ContractTests(unittest.TestCase):
         args = command(self.config, 1, self.root, "aiperf")
         self.assertNotIn("--api-key", args)
         self.assertIn("--config", args)
+
+    @patch("bench.preflight.subprocess.run")
+    @patch("bench.preflight.fetch", side_effect=ValueError("HTTP 404; verify endpoint, access and service health"))
+    def test_model_listing_preserves_the_failed_read_reason(self, fetch_mock, runtime):
+        runtime.return_value.returncode = 0
+        runtime.return_value.stdout = "0.12.0"
+        checks = verify(self.config, "aiperf")
+        model = next(check for check in checks if check["name"] == "model")
+        self.assertEqual(model["status"], "fail")
+        self.assertIn("HTTP 404", model["detail"])
 
     def rate_config(self):
         config = copy.deepcopy(self.config)

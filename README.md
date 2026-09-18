@@ -16,14 +16,15 @@ make help
 Copy `examples/benchmark.json` to your working directory. Set the served model, endpoint and approved traffic bounds. Keep results in a durable directory outside the source checkout.
 
 ```sh
-make plan CONFIG=/path/to/benchmark.json RUN=/path/to/first-smoke
+make plan-smoke CONFIG=/path/to/benchmark.json RUN=/path/to/first-smoke
 make verify CONFIG=/path/to/benchmark.json
 make smoke CONFIG=/path/to/benchmark.json RUN=/path/to/first-smoke
+make plan CONFIG=/path/to/benchmark.json RUN=/path/to/first-sweep
 make sweep CONFIG=/path/to/benchmark.json RUN=/path/to/first-sweep
 make report RUN=/path/to/first-sweep
 ```
 
-`plan` reads local configuration and prints commands. `verify` checks the runtime and reads the configured model listing, metrics and optional Kubernetes readiness, route/pool and objective bindings. Neither sends inference. `smoke` sends one generated request with a 16-token output limit. `sweep` uses your workload and runs load points in order. Choose a new output directory for each campaign.
+`plan` previews the configured sweep; `plan-smoke` previews only the one-request smoke. Both show commands and request budgets without executing them. `verify` checks the runtime and reads the configured model listing, metrics and optional Kubernetes readiness, route/pool and objective bindings. Neither preview nor verification sends inference. `smoke` sends one generated request with a 16-token output limit. `sweep` uses your workload and runs load points in order. Choose a new output directory for each campaign.
 
 The example's 1/2/4 concurrency and 20-request limit qualify mechanics; they are not calibrated capacity settings. Each point stops sending at its request limit or duration, whichever comes first. Grace allows outstanding requests to finish; the outer deadline also bounds startup and export. There is no implicit warmup. Plan warmup, repeated measurements and longer steady windows before making performance claims.
 

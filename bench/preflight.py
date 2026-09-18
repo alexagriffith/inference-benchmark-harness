@@ -54,8 +54,8 @@ def verify(config, aiperf):
             body, attempts = fetch(endpoint["url"].rstrip("/") + endpoint["models_path"], headers)
             models = [row["id"] for row in json.loads(body)["data"]]
             checks.append({"name": "model", "status": "pass" if endpoint["model"] in models else "fail", "attempts": attempts, "detail": "Served model listing; route attribution still requires server evidence"})
-        except (ValueError, KeyError, TypeError):
-            checks.append({"name": "model", "status": "fail", "detail": "Cannot confirm model listing; check models_path, model and access"})
+        except (ValueError, KeyError, TypeError) as exc:
+            checks.append({"name": "model", "status": "fail", "detail": f"Cannot confirm model listing: {exc}. Check models_path, model and access"})
     else:
         checks.append({"name": "model", "status": "unverified", "detail": "No model-list API configured; smoke must check inference"})
     for producer in config.get("metrics", []):

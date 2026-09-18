@@ -3,7 +3,7 @@
 | Condition | Automatic behavior | Operator action |
 |---|---|---|
 | Temporary connection failure or HTTP 502/503/504 during a read-only check | At most three reads, with 1-second and 2-second delays | Fix the path if the check remains unavailable |
-| Wrong model, rejected authentication, unready deployment or missing required metric | Stop before inference | Correct the named precondition, then resume |
+| Wrong model, rejected authentication, unready deployment or missing required metric | Stop before inference | Restore the planned precondition, then resume; changed experiment configuration needs a new run |
 | AIPerf exits unsuccessfully, exceeds its deadline or leaves incomplete exports | Stop and preserve the attempt | Inspect logs and evidence; deliberate resume makes a new attempt |
 | Interrupt or termination signal | Terminate the process group owned by this run and save the outcome | Inspect the partial attempt before resume |
 | Valid measurement misses a goal or includes request errors | Retain the measurement and stop increasing load | Resume advances to the next point, without rerunning this result |

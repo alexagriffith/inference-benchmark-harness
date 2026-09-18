@@ -38,8 +38,20 @@ def main():
         else:
             config = load(args.config, args.smoke)
             if args.action == "plan":
-                result = {"status": "plan_only", "commands": [command(config, point, Path(args.run).resolve() / f"point-{index + 1:02d}-attempt-{index + 1:03d}", args.aiperf)
-                          for index, point in enumerate(load_points(config))]}
+                points, bounds = load_points(config), config["load"]
+                requests = len(points) * bounds["requests"]
+                result = {
+                    "status": "plan_only",
+                    "budget": {
+                        "points": len(points), "requests_per_point": bounds["requests"],
+                        "max_requests_first_pass": requests,
+                        "max_requests_with_manual_retries": requests * bounds.get("max_attempts_per_point", 3),
+                        "process_deadline_seconds_per_attempt": bounds["deadline_seconds"],
+                        "automatic_inference_retries": 0,
+                    },
+                    "commands": [command(config, point, Path(args.run).resolve() / f"point-{index + 1:02d}-attempt-{index + 1:03d}", args.aiperf)
+                                 for index, point in enumerate(points)],
+                }
             elif args.action == "verify":
                 result = {"checks": verify(config, args.aiperf)}
                 result["status"] = "preflight_failed" if any(c["status"] == "fail" for c in result["checks"]) else "ready_for_smoke"

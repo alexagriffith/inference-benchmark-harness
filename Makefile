@@ -3,9 +3,10 @@ CONFIG ?= examples/benchmark.json
 RUN ?= /tmp/inference-benchmark-run
 AIPERF ?= aiperf
 
-.PHONY: help plan verify smoke sweep resume report test test-integration
+.PHONY: help plan plan-smoke verify smoke sweep resume report test test-integration
 help:
 	@echo 'plan             Print commands without network requests or writes'
+	@echo 'plan-smoke       Preview the one-request smoke and its budget'
 	@echo 'verify           Read endpoint and metrics; send no inference'
 	@echo 'smoke            Send one short request'
 	@echo 'sweep            Run configured concurrency or rate points sequentially'
@@ -16,6 +17,8 @@ help:
 	@echo 'Set CONFIG, RUN and AIPERF to select inputs, output and runtime.'
 plan:
 	$(PYTHON) -m bench plan --config "$(CONFIG)" --run "$(RUN)" --aiperf "$(AIPERF)"
+plan-smoke:
+	$(PYTHON) -m bench plan --config "$(CONFIG)" --run "$(RUN)" --aiperf "$(AIPERF)" --smoke
 verify:
 	$(PYTHON) -m bench verify --config "$(CONFIG)" --aiperf "$(AIPERF)"
 smoke:
