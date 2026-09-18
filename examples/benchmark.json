@@ -13,12 +13,18 @@
     "tokenizer": "builtin"
   },
   "load": {
-    "concurrency": [1, 2, 4],
+    "concurrency": [
+      1,
+      2,
+      4
+    ],
     "requests": 20,
     "duration_seconds": 60,
     "request_timeout_seconds": 30,
     "grace_seconds": 35,
-    "deadline_seconds": 180
+    "deadline_seconds": 180,
+    "repeats": 3,
+    "max_attempts_per_repeat": 3
   },
   "metrics": [],
   "goals": {}

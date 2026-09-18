@@ -27,7 +27,8 @@ class ContractTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.config = load(ROOT / "examples/benchmark.json")
-        self.config["load"].update(concurrency=[1, 2], requests=2)
+        self.config["load"].pop("max_attempts_per_repeat", None)
+        self.config["load"].update(repeats=1, concurrency=[1, 2], requests=2)
 
     def fixture(self, args, directory, deadline, lock_fd):
         native = directory / "native"
@@ -270,13 +271,52 @@ class ContractTests(unittest.TestCase):
         self.fixture([], self.root, 10, 0)
         native = self.root / "native"
         self.config["metrics"] = [{"name": "engine", "url": "http://localhost/metrics", "required": [{"metric": "requests", "why": "Coverage"}]}]
-        (native / "server_metrics_export.jsonl").write_text(json.dumps({"endpoint_url": "http://localhost/metrics", "timestamp_ns": 50}) + "\n")
+        (native / "server_metrics_export.jsonl").write_text(json.dumps({"endpoint_url": "http://localhost/metrics", "timestamp_ns": 50, "metrics": {"requests": [{"value": 0}]}}) + "\n")
         write_json(native / "server_metrics_export.json", {"summary": {"endpoint_info": {
             "http://localhost/metrics": {"total_fetches": 5, "first_fetch_ns": 50, "last_fetch_ns": 250}}}})
         self.assertEqual(analyze(self.root, self.config, {"exit_code": 0})["evidence"], "complete")
         write_json(native / "server_metrics_export.json", {"summary": {"endpoint_info": {
             "http://localhost/metrics": {"total_fetches": 1, "first_fetch_ns": 50, "last_fetch_ns": 50}}}})
         self.assertEqual(analyze(self.root, self.config, {"exit_code": 0})["evidence"], "invalid")
+
+    def test_required_metric_needs_a_real_exported_sample(self):
+        self.fixture([], self.root, 10, 0)
+        native = self.root / "native"
+        url = "http://localhost/metrics"
+        self.config["metrics"] = [{"name": "engine", "url": url,
+                                   "required": [{"metric": "requests_total", "why": "Completion evidence"}]}]
+        write_json(native / "server_metrics_export.json", {
+            "summary": {"endpoint_info": {url: {"total_fetches": 5, "first_fetch_ns": 50, "last_fetch_ns": 250}}},
+            "metrics": {"requests": {"type": "counter"}}})
+        for metrics, expected in (({}, "invalid"), ({"unrelated": [{"value": 1}]}, "invalid"),
+                                  ({"requests": [{"value": float("nan")}]}, "invalid"),
+                                  ({"requests": [{"value": 0}]}, "complete")):
+            with self.subTest(metrics=metrics):
+                (native / "server_metrics_export.jsonl").write_text(json.dumps({
+                    "endpoint_url": url, "timestamp_ns": 50, "metrics": metrics}) + "\n")
+                self.assertEqual(analyze(self.root, self.config, {"exit_code": 0})["evidence"], expected)
+
+    def test_discovery_rejects_malformed_present_aggregates(self):
+        self.fixture([], self.root, 10, 0)
+        path = self.root / "native/profile_export_aiperf.json"
+        original = json.loads(path.read_text())
+        self.config["goals"] = {}
+        for metric in ({"unit": "ms", "p95": float("nan")}, {"unit": "ms", "p95": -1},
+                       {"unit": "s", "p95": 1}, {"unit": "ms", "p95": True}):
+            with self.subTest(metric=metric):
+                write_json(path, {**original, "request_latency": metric})
+                self.assertEqual(analyze(self.root, self.config, {"exit_code": 0})["evidence"], "invalid")
+        write_json(path, {**original, "error_request_count": {"avg": False}})
+        self.assertIn("invalid_request_counts", analyze(self.root, self.config, {"exit_code": 0})["reasons"])
+
+    def test_same_deployment_name_in_two_namespaces_keeps_both_identities(self):
+        before = [{"namespace": namespace, "name": "model", "status": "pass", "identity": [{"uid": namespace}]}
+                  for namespace in ("prefill", "decode")]
+        self.assertEqual(deployment_changes(before, copy.deepcopy(before)), [])
+        for index in (0, 1):
+            after = copy.deepcopy(before)
+            after[index]["identity"][0]["uid"] = "replacement"
+            self.assertIn("deployment_identity_changed", deployment_changes(before, after))
 
     def test_interruption_cannot_be_accepted(self):
         self.fixture([], self.root, 10, 0)
@@ -341,6 +381,30 @@ class ContractTests(unittest.TestCase):
             state = campaign(self.config, root, "aiperf", True)
         self.assertEqual(state["status"], "attempt_budget_exhausted")
         self.assertEqual(child.call_count, 1)
+
+    @patch("bench.runner.verify", return_value=[])
+    def test_nested_manifest_is_preserved_and_verified_on_resume(self, verify):
+        def with_nested_manifest(*args):
+            result = self.fixture(*args)
+            (args[1] / "native/manifest.json").write_text('{"source":"original"}')
+            return result
+        root = self.root / "run"
+        with patch("bench.runner.run_child", side_effect=with_nested_manifest):
+            state = campaign(self.config, root, "aiperf")
+        attempt = root / state["completed"][0]
+        self.assertIn("native/manifest.json", json.loads((attempt / "manifest.json").read_text()))
+        (attempt / "native/manifest.json").write_text('{"source":"changed"}')
+        with self.assertRaisesRegex(ValueError, "evidence changed"):
+            campaign(self.config, root, "aiperf", True)
+
+    def test_cleanup_permission_failure_is_saved_as_invalid_execution(self):
+        import errno
+        with (self.root / ".lock").open("w") as lock, \
+             patch("bench.runner.os.killpg", side_effect=PermissionError(errno.EPERM, "fixture")):
+            result = run_child([sys.executable, "-c", "pass"], self.root, 5, lock.fileno())
+        self.assertEqual(result["reason"], "cleanup_failed")
+        self.assertEqual(result["exit_code"], 125)
+        self.assertIn("finished", result)
 
     def test_real_child_is_bounded_by_deadline(self):
         with (self.root / ".lock").open("w") as lock:

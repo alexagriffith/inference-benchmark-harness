@@ -6,9 +6,10 @@ from pathlib import Path
 import signal
 import sys
 
-from .config import load, load_points
+from .config import attempt_limit, attempt_prefix, load, load_points, repeat_count
 from .preflight import verify
 from .runner import campaign, command
+from .provenance import timestamp
 
 
 def main():
@@ -35,37 +36,42 @@ def main():
             root = Path(args.run)
             result = {"state": json.loads((root / "state.json").read_text()),
                       "attempts": {str(path.parent.name): json.loads(path.read_text()) for path in sorted(root.glob("point-*/summary.json"))}}
+            result["points"] = {path.stem: json.loads(path.read_text()) for path in sorted(root.glob("point-*-repeats.json"))}
             result["status"] = result["state"]["status"]
         else:
+            acquired = {"started": timestamp()}
             config = load(args.config, args.smoke)
+            acquired["finished"] = timestamp()
             if args.action == "plan":
                 points, bounds = load_points(config), config["load"]
-                requests = len(points) * bounds["requests"]
+                repeats = repeat_count(config)
+                requests = len(points) * repeats * bounds["requests"]
                 result = {
                     "status": "plan_only",
                     "budget": {
-                        "points": len(points), "requests_per_point": bounds["requests"],
+                        "points": len(points), "repeats_per_point": repeats,
+                        "requests_per_repeat": bounds["requests"], "requests_per_point": bounds["requests"] * repeats,
                         "max_requests_first_pass": requests,
-                        "max_requests_with_manual_retries": requests * bounds.get("max_attempts_per_point", 3),
+                        "max_requests_with_manual_retries": requests * attempt_limit(config),
                         "process_deadline_seconds_per_attempt": bounds["deadline_seconds"],
                         "startup_export_margin_seconds": bounds["deadline_seconds"] - bounds["duration_seconds"] - bounds["grace_seconds"],
                         "automatic_inference_retries": 0,
                     },
-                    "commands": [command(config, point, Path(args.run).resolve() / f"point-{index + 1:02d}-attempt-001", args.aiperf)
-                                 for index, point in enumerate(points)],
+                    "commands": [command(config, point, Path(args.run).resolve() / f"{attempt_prefix(index, repeat, repeats)}-attempt-001", args.aiperf)
+                                 for index, point in enumerate(points) for repeat in range(repeats)],
                 }
             elif args.action == "verify":
                 result = {"checks": verify(config, args.aiperf)}
                 result["status"] = "preflight_failed" if any(c["status"] == "fail" for c in result["checks"]) else "ready_for_smoke"
             else:
-                result = campaign(config, args.run, args.aiperf, args.resume)
-        print(json.dumps(result, indent=2))
+                result = campaign(config, args.run, args.aiperf, args.resume, config_acquisition=acquired)
+        print(json.dumps({**result, "reported": timestamp()}, indent=2))
         return 0 if result.get("status", "complete") in ("complete", "ready_for_smoke", "plan_only") else 2
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(f"Cannot continue: {exc}", file=sys.stderr)
+        print(f"{timestamp()['timestamp_utc']} Cannot continue: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print("Interrupted; inspect the saved campaign state before resuming", file=sys.stderr)
+        print(f"{timestamp()['timestamp_utc']} Interrupted; inspect the saved campaign state before resuming", file=sys.stderr)
         return 130
 
 

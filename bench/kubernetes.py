@@ -3,7 +3,11 @@
 import json
 import subprocess
 
+from .provenance import observed, timestamp
 
+
+@observed("kubernetes_acquisition", source=lambda context, namespace, kind, name=None, selector=None:
+          {"namespace": namespace, "kind": kind, "name": name})
 def read(context, namespace, kind, name=None, selector=None):
     args = ["kubectl", "--context", context, "--request-timeout=10s", "-n", namespace, "get", kind]
     if name:
@@ -32,10 +36,12 @@ def selector_text(selector):
     return ",".join(parts)
 
 
+@observed("deployment_inspection")
 def inspect(config):
     scope = config["kubernetes"]
     checks = []
     for target in scope["deployments"]:
+        started = timestamp()
         def get(kind, name=None, selector=None):
             return read(scope["context"], target["namespace"], kind, name, selector)
         try:
@@ -57,6 +63,8 @@ def inspect(config):
                                                         for container in pod.get("status", {}).get("containerStatuses", [])]} for pod in pods]})
         except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
             checks.append({"name": target["name"], "status": "fail", "detail": str(exc)})
+        checks[-1]["namespace"] = target["namespace"]
+        checks[-1]["observation"] = {"started": started, "finished": timestamp()}
     if scope.get("routing"):
         from .routing import inspect_routing
         checks.extend(inspect_routing(config))
@@ -66,7 +74,7 @@ def inspect(config):
 def deployment_changes(before, after):
     """Compare sampled pod identities; continuous stability needs monitoring."""
     def identities(checks):
-        return {check["name"]: sorted(check["identity"], key=lambda pod: pod["uid"])
+        return {(check.get("namespace"), check["name"]): sorted(check["identity"], key=lambda pod: pod["uid"])
                 for check in checks if "identity" in check}
     changes = ["postflight_failed:" + check["name"] for check in after if check["status"] == "fail"]
     if identities(before) != identities(after):

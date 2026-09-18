@@ -1,84 +1,110 @@
-# Collect the signals needed for the question
+# Metric reference
 
-Start with client evidence. Add required server signals when the experiment needs them. Empty or missing telemetry is unknown, not zero.
+Use this as a discovery seed, then confirm the deployed version and scrape output. The engine names below were observed on vLLM 0.27.1; router names and labels were checked against llm-d-router v0.10.0. They are not a promise about another release. Save source names, ingested names, units and producer identity with the run.
 
-| Question | Signal | Why it matters |
+## Client evidence
+
+AIPerf 0.12.0 exports `profile_export_aiperf.json` (schema 1.4) and `profile_export.jsonl`. Read each exported `unit`; do not infer it from an old tool's column name.
+
+| Export key | Meaning | Use |
 |---|---|---|
-| Did requests finish? | Native records, error outcomes, cancellation and process status | Reconcile attempts before interpreting speed |
-| How long did users wait? | TTFT, request latency, inter-token timing and token counts | Describe the observed client experience with units and sample count |
-| Is the engine under pressure? | Running/waiting requests, KV-cache use, preemptions and completions, per replica | Distinguish engine pressure from transport or scheduling delays |
-| Did flow control act? | Endpoint Picker queue depth/time, saturation, dispatch and rejection outcomes, objective/flow labels | Establish admission behavior and the identity receiving service |
-| Did the platform limit the test? | Ready replicas, restarts, CPU/GPU and network/storage pressure | Separate load-generator or platform limits from serving limits |
+| `time_to_first_token` | Client time to first token; milliseconds in the qualified path | Compare against a declared TTFT goal |
+| `request_latency` | Client request duration; milliseconds | End-to-end experience for completed requests |
+| `inter_token_latency` | Client timing between tokens; milliseconds | Streaming responsiveness; not automatically equivalent to another tool's per-request time-per-output-token average |
+| `request_throughput` | Completed requests per second | Compare achieved throughput with offered load |
+| `request_count`, `error_request_count` | Successful and failed request counts; requests | Reconcile the aggregate with native records |
+| Record `metadata.request_start_ns`, `request_end_ns` | Request timestamps, nanoseconds | Align client activity and server collection |
 
-For vLLM, inspect actual names such as `vllm:num_requests_running`, `vllm:num_requests_waiting`, `vllm:kv_cache_usage_perc` and `vllm:request_success_total`. Names and labels depend on version. Endpoint Picker flow-control families use `llm_d_epp_*` in the reviewed router release; do not substitute a guessed generic name. Some counters only appear after the first relevant event.
+Report errors separately from successful-request latency. Keep native records and token counts so differences in request shape remain visible.
 
-Configure each approved direct endpoint separately, especially when a service load-balances multiple replicas:
+## Engine signals
+
+The observed engine labels include `model_name` and `engine`. Attach the scraped pod or endpoint identity separately: two pods can both call their engine `0`.
+
+| Source metric | Type / unit | What it can establish |
+|---|---|---|
+| `vllm:num_requests_running` | Gauge / requests | Engine occupancy |
+| `vllm:num_requests_waiting` | Gauge / requests | Requests waiting inside the engine |
+| `vllm:kv_cache_usage_perc` | Gauge / fraction; 1 means 100% | KV-cache pressure |
+| `vllm:num_preemptions_total` | Counter / preemptions | Engine preemption activity; not router eviction proof |
+| `vllm:request_success_total` | Counter / requests; also `finished_reason` | Completed requests by finish reason |
+| `vllm:prompt_tokens_total`, `vllm:generation_tokens_total` | Counters / tokens | Input and output work |
+| `vllm:prefix_cache_hits_total`, `vllm:prefix_cache_queries_total` | Counters / tokens | Token-based cache reuse; use matching-window deltas, not request-hit rate |
+| `vllm:time_to_first_token_seconds` | Histogram / seconds | Engine-side first-token timing |
+| `vllm:inter_token_latency_seconds` | Histogram / seconds | Engine inter-token timing |
+| `vllm:request_time_per_output_token_seconds` | Histogram / seconds | Per-request time-per-output-token distribution |
+| `vllm:e2e_request_latency_seconds` | Histogram / seconds | Engine request duration |
+| `vllm:request_queue_time_seconds` | Histogram / seconds | Engine queue time |
+| `vllm:request_prefill_time_seconds`, `vllm:request_decode_time_seconds` | Histograms / seconds | Prefill and decode timing |
+
+Counter resets and rollout changes break a naive before/after subtraction. Keep per-producer series until identity and time windows are reconciled. An aggregate cache ratio requires a nonzero denominator and matching populations.
+
+## Endpoint Picker signals
+
+The model labels in these definitions are `model_name` and `target_model_name`. Do not assume an objective-name label exists: keep the declared objective-to-priority mapping and verify the actual request classification separately.
+
+| Source metric | Type / unit | Declared labels | What it can establish |
+|---|---|---|---|
+| `llm_d_epp_flow_control_queue_size` | Gauge / requests | `fairness_id`, `priority`, `inference_pool`, model labels | Requests held by flow control; not engine in-flight work |
+| `llm_d_epp_flow_control_queue_bytes` | Gauge / bytes | Same as queue size | Memory held in the flow-control queue |
+| `llm_d_epp_flow_control_request_queue_duration_seconds` | Histogram / seconds | `fairness_id`, `priority`, `outcome`, `inference_pool`, model labels | Time from enqueue to final flow-control outcome |
+| `llm_d_epp_flow_control_pool_saturation` | Gauge / detector signal | `inference_pool` | Dispatch gate signal; not GPU utilization |
+| `llm_d_epp_flow_control_requests_total` | Counter / requests | `outcome`, `priority`, `inference_pool` | Flow-control outcomes; inspect actual outcome values |
+| `llm_d_epp_request_total` | Counter / requests | Model labels, `fairness_id`, `priority` | Router requests by class |
+| `llm_d_epp_request_ttft_seconds` | Histogram / seconds | Model labels, `fairness_id`, `priority`, `streaming` | Router-observed first-token timing |
+
+A saturation value of 1 is the declared gating set point in this router version; an empty pool can also report 1. Interpret it with endpoint readiness and the effective detector configuration. Queueing alone does not prove eviction, priority protection or fair service.
+
+Prometheus classic histograms expose `_bucket`, `_sum` and `_count` series; buckets include `le`. Keep those components and their dimensions for percentile queries. AIPerf's parsed server exports may normalize counter names by removing `_total`; the raw scrape name and the parsed key are not necessarily identical. New Relic can transform the representation again.
+
+[Router definitions at v0.10.0](https://github.com/llm-d/llm-d-router/blob/v0.10.0/pkg/epp/metrics/llm_d_router_metrics.go)
+
+## Collection and New Relic
+
+AIPerf scrapes the configured Prometheus-format producer URLs directly. A Prometheus database is optional. `verify` prints discovered names and missing requirements; it checks names, not label attribution or semantic equivalence. Required metrics need valid exported samples and endpoint fetch coverage spanning the request window. The pinned exporter normalizes counter and histogram names; the validator uses their exported types. This does not prove uninterrupted per-metric availability or correct labels. An unchanged metric is not a failed scrape.
 
 ```json
-{
-  "metrics": [
-    {
-      "name": "engine-1",
-      "url": "http://engine-1:8000/metrics",
-      "required": [
-        {"metric": "vllm:num_requests_running", "why": "Observe engine occupancy during this capacity experiment"}
-      ]
-    }
-  ]
-}
+"metrics": [{
+  "name": "engine-1",
+  "url": "http://engine-1:8000/metrics",
+  "required": [{"metric": "vllm:num_requests_waiting", "why": "Identify engine queue pressure"}]
+}]
 ```
 
-Use an empty `required` list for optional collection. Unreachable optional telemetry is reported without blocking client measurements. A failed required check stops before load. Afterward the runner verifies the endpoint's native fetch timeline spans client requests. AIPerf JSONL omits unchanged values, so update timestamps alone are not scrape-health evidence. Window coverage does not prove an adequate sampling frequency or absence of internal gaps; inspect sampling and fetch counts for the duration and question.
+Use a stable URL for each replica, not a Service that alternates between pods. Inference bearer authentication does not configure metric authentication. Qualify approved producer access from the actual runner location. Metrics without requirements are optional; missing optional GPU data does not invalidate client smoke. Missing class attribution prevents priority/fairness claims.
 
-## New Relic
+New Relic is a separate monitoring service. Existing agents can send it engine, router and GPU metrics; this package does not install agents, query New Relic or upload native files. Keep compact run state and native evidence on operator-controlled storage. New Relic can hold the infrastructure history alongside it, correlated by saved UTC windows and producer identities.
 
-A Prometheus-format endpoint is a data source; Prometheus and New Relic are collection/query choices. Direct AIPerf collection does not require a Prometheus database. Keep the existing New Relic agent if it already collects the necessary producers.
+| Verify | Why |
+|---|---|
+| Source name, type, unit and labels | A rename can also change meaning; absent lazy counters are not zero |
+| Target/pod and GPU identities | Avoid missing replicas or double-counting duplicate collectors |
+| Ingested names and attributes | Filters, relabeling and histogram conversion can change queries |
+| Before/during/after samples | Ingestion lag and scrape intervals can hide a short smoke |
+| Matching run window and clock | Comparisons need the same population and interval |
 
-Check the exact target selection, ingested metric names, resource attributes, histogram representation and fresh samples for the run window. New Relic's Prometheus agent defaults to a 30-second scrape interval and supports filters/relabeling; a short smoke can fall between samples. Avoid duplicate collection jobs. These settings are documented in [New Relic's agent setup](https://docs.newrelic.com/docs/infrastructure/prometheus-integrations/install-configure-prometheus-agent/setup-prometheus-agent/).
-
-If a signal is missing, report the producer, expected source metric, experiment question and whether direct collection or ingestion failed. No New Relic integration is installed or reconfigured by this package. Its behavior must be checked in the operator's environment.
-
-## Platform boundaries
-
-Red Hat AI Inference 3.5 documents vLLM, Endpoint Picker and platform monitoring in its [llm-d monitoring guide](https://docs.redhat.com/en/documentation/red_hat_ai_inference/3.5/html/monitor_and_troubleshoot_distributed_inference_with_llm-d_deployments/monitoring-llmd-deployments). vLLM and router signals come from those components; KServe lifecycle metrics are not required by this harness. Upstream and product deployments can differ in versions, enabled features, labels, monitoring discovery and transport. Observe the deployed components before treating two inventories as equivalent.
-
-Never derive router latency by subtracting independently aggregated percentiles. A client latency improvement alone does not prove priority or fairness; those comparisons require matched workloads, controls and server attribution.
-
-## Operator checklist
-
-Use the [metric reference](metric-reference.md) to choose the minimum evidence for the experiment. Complete this once for each producer and repeat after a version, replica or collector change.
-
-1. **Identify the source.** Record component version, pod or endpoint identity, approved metrics URL and access method. Reach it from the actual benchmark location. A laptop port-forward working does not prove a Job can reach it.
-2. **Inspect the raw metric.** Confirm the source name, type, unit and labels. A lazy counter absent before its first event is unknown, not a pre-existing zero. Require it only when the planned claim needs it.
-3. **Find it in New Relic.** Discover metric names and attributes instead of assuming the scrape name and pod labels survived ingestion. Check filters, relabeling and histogram conversion with the monitoring owner.
-4. **Check the time window.** Record UTC start/end, scrape interval, retention resolution and relevant gaps. Compare fresh samples from before, during and after the run. Choose an interval that can resolve the behavior being studied; a short smoke is not a time-series qualification.
-5. **Preserve attribution.** Keep per-replica identity and the priority/flow dimensions needed for the comparison. A service that alternates between engine pods is not a reliable per-pod counter source. Avoid counting duplicate collectors twice.
-6. **Record the limit.** If collection is incomplete, name the missing signal and the conclusion it prevents. Client smoke results can still be useful without GPU telemetry; a fairness claim needs demand and service attributed to the relevant flows.
-
-These read-only New Relic Query Language (NRQL) discovery examples follow the documented [metric discovery interface](https://docs.newrelic.com/docs/data-apis/understand-data/metric-data/query-metric-data-type/). Replace the placeholders and add the environment filter appropriate to your account:
+Read-only NRQL discovery examples; replace names and add your environment filters:
 
 ```sql
 FROM Metric SELECT uniques(metricName)
 WHERE (metricName LIKE 'vllm%' OR metricName LIKE 'llm_d_epp%')
 SINCE 30 minutes ago
-```
 
-```sql
 FROM Metric SELECT keyset()
 WHERE metricName = '<observed-ingested-metric-name>'
 SINCE 30 minutes ago
 ```
 
-For the actual experiment, set the query time range to the saved UTC run window. A discovery result proves that data exists in the selected range, not that every replica or the full experiment was collected. Query the observed attributes; [integration-specific discovery](https://docs.newrelic.com/docs/infrastructure/prometheus-integrations/view-query-data/view-query-your-prometheus-data/) shows examples, but attribute names vary with the ingestion path. These queries are documentation-checked examples, not a verified account integration.
+For analysis, query the saved UTC run window. These are documented examples, not a tested account integration. New Relic's agent defaults to a 30-second scrape interval; confirm the installed configuration. See [agent setup](https://docs.newrelic.com/docs/infrastructure/prometheus-integrations/install-configure-prometheus-agent/setup-prometheus-agent/) and [metric discovery](https://docs.newrelic.com/docs/data-apis/understand-data/metric-data/query-metric-data-type/).
 
-When requesting a missing signal, use this short record:
+If a required signal is absent, record **producer/version → source name/unit → observed failure → blocked conclusion → owner/next check**. Name-only changes can be configured in `metrics[].required[].metric`; unit conversion and ingested-name mapping require external queries or a future adapter. Follow [debugging](operator-guide.md#debugging).
 
-```text
-Question: Is waiting occurring inside the engine?
-Producer and version: <engine image / version>
-Source metric: vllm:num_requests_waiting (requests)
-Identity needed: each serving pod and engine
-Observed: <absent at source / present at source but absent in New Relic / stale>
-Consequence: engine queue pressure cannot be attributed during this run
-Next check and owner: <engine owner or monitoring owner, based on observed layer>
-```
+## GPU and platform boundaries
+
+The harness explicitly uses `--no-gpu-telemetry`. Generic server scraping and AIPerf's dedicated GPU telemetry are separate paths. No dedicated GPU-summary export or dashboard is provided by V1.
+
+For remote NVIDIA serving nodes, an existing DCGM exporter is the relevant source; local `pynvml` measures the benchmark host. Verify exporter/node/GPU UUID/pod attribution, all-node coverage and scrape timing before making GPU-efficiency claims. A load-balanced exporter service may omit nodes. Dedicated integration can be added later without deploying another exporter. See [AIPerf GPU telemetry](https://docs.nvidia.com/aiperf/tutorials/metrics-analysis/gpu-telemetry-with-ai-perf#path-2-other-inference-servers-custom-dcgm).
+
+The NVIDIA device plugin allocates GPU resources; it does not collect telemetry. Device-sharing `replicas` differ from model Deployment replicas. Capture sharing/MIG configuration before interpreting advertised resources as physical GPUs. See [device-plugin configuration](https://github.com/NVIDIA/k8s-device-plugin).
+
+Component versions and enabled features determine available metrics. vLLM/Endpoint Picker signals do not require KServe; validate the deployed inventory. Never subtract independently aggregated percentiles to infer router latency, or infer fairness/priority protection from client latency alone.

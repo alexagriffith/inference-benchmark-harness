@@ -37,7 +37,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.requests.append({"path": self.path, "model": payload.get("model"),
-                              "authorized": self.headers.get("Authorization") == "Bearer fixture-key", "at": time.time()})
+                              "authorized": self.headers.get("Authorization") == "Bearer fixture-key",
+                              "payload": payload, "at": time.time()})
         if self.failures:
             self.send_error(503)
             return
@@ -72,7 +73,7 @@ def main():
     try:
         config = json.loads((ROOT / "examples/benchmark.json").read_text())
         config["endpoint"].update(url=f"http://127.0.0.1:{server.server_port}", model="fixture-model", api_key_env="FIXTURE_API_KEY")
-        config["load"].update(concurrency=[1, 2], requests=3, duration_seconds=10,
+        config["load"].update(concurrency=[1, 2], repeats=1, requests=3, duration_seconds=10,
                               request_timeout_seconds=3, grace_seconds=5, deadline_seconds=90)
         config["metrics"] = [{"name": "fixture", "url": config["endpoint"]["url"] + "/metrics", "required": [{"metric": "fixture_requests_total", "why": "Check collection during the request window"}]}]
         duration_requests = 0
@@ -112,6 +113,13 @@ def main():
         assert len(Handler.requests) == 12 + duration_requests, len(Handler.requests)
         assert all(row["authorized"] for row in Handler.requests)
         assert all(row["path"] == "/v1/chat/completions" for row in Handler.requests)
+        assert all(row["model"] == "fixture-model" for row in Handler.requests)
+        assert all(row["payload"].get("stream") is True for row in Handler.requests)
+        expected_prompts = {json.loads(line)["text"] for line in (ROOT / "examples/prompts.jsonl").read_text().splitlines() if line.strip()}
+        for row in Handler.requests[6:9]:
+            payload = row["payload"]
+            assert any(message.get("content") in expected_prompts for message in payload["messages"]), payload
+            assert payload.get("max_tokens", payload.get("max_completion_tokens")) == 32, payload
         Handler.failures = False
         sys.path.insert(0, str(ROOT))
         from bench.runner import command as build_command
@@ -155,6 +163,29 @@ def main():
                 for index, rate in enumerate(rates):
                     point = received[index * 3:(index + 1) * 3]
                     assert point[-1]["at"] - point[0]["at"] >= 0.6 * 2 / rate
+        config["load"].pop("rates")
+        config["load"].pop("arrival")
+        config["load"].pop("max_concurrency")
+        config["load"].update(concurrency=[1, 2], repeats=3, requests=2)
+        path = output / "repeats.json"
+        path.write_text(json.dumps(config))
+        before = len(Handler.requests)
+        cmd = [sys.executable, "-m", "bench", "run", "--config", str(path),
+               "--run", str(output / "repeats"), "--aiperf", args.aiperf, "--execute"]
+        result = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=400)
+        commands.append({"case": "repeats", "command": cmd, "exit_code": result.returncode,
+                         "stdout": result.stdout, "stderr": result.stderr})
+        (output / "commands.json").write_text(json.dumps(commands, indent=2))
+        assert result.returncode == 0, result.stdout + result.stderr
+        state = json.loads((output / "repeats/state.json").read_text())
+        assert len(state["completed"]) == 6
+        assert len(Handler.requests) - before == 12
+        windows = []
+        for attempt in state["completed"]:
+            rows = [json.loads(line) for line in (output / "repeats" / attempt / "native/profile_export.jsonl").read_text().splitlines() if line.strip()]
+            windows.append((min(r["metadata"]["request_start_ns"] for r in rows), max(r["metadata"]["request_end_ns"] for r in rows)))
+        assert all(left[1] <= right[0] for left, right in zip(windows, windows[1:])), windows
+        print(json.dumps({"case": "repeats", "exit_code": 0, "valid_repeats": 6}), flush=True)
         (output / "observed-requests.json").write_text(json.dumps(Handler.requests, indent=2))
         print(json.dumps({"status": "pass", "requests": len(Handler.requests), "artifacts": str(output)}))
     finally:

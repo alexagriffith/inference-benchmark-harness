@@ -36,6 +36,20 @@ def load_points(config):
     return bounds["rates"] if "rates" in bounds else bounds["concurrency"]
 
 
+def repeat_count(config):
+    return config["load"].get("repeats", 1)
+
+
+def attempt_limit(config):
+    bounds = config["load"]
+    return bounds.get("max_attempts_per_repeat", bounds.get("max_attempts_per_point", 3))
+
+
+def attempt_prefix(index, repeat, repeats):
+    point = f"point-{index + 1:02d}"
+    return f"{point}-repeat-{repeat + 1:02d}" if repeats > 1 else point
+
+
 def phase(config, point):
     bounds = config["load"]
     if "rates" in bounds:
@@ -136,7 +150,10 @@ def load(path, smoke=False):
     elif "arrival" in bounds or "max_concurrency" in bounds:
         raise ValueError("arrival and max_concurrency apply only to rate mode")
     positive(bounds["requests"], "requests", integer=True)
-    positive(bounds.get("max_attempts_per_point", 3), "max_attempts_per_point", integer=True)
+    positive(repeat_count(config), "repeats", integer=True)
+    if "max_attempts_per_repeat" in bounds and "max_attempts_per_point" in bounds:
+        raise ValueError("Use max_attempts_per_repeat, not both attempt-limit names")
+    positive(attempt_limit(config), "max_attempts_per_repeat", integer=True)
     for key in ("duration_seconds", "request_timeout_seconds", "grace_seconds", "deadline_seconds"):
         positive(bounds[key], key)
     if bounds["deadline_seconds"] <= bounds["duration_seconds"] + bounds["grace_seconds"]:
@@ -161,4 +178,6 @@ def load(path, smoke=False):
         for key in ("rates", "arrival", "max_concurrency"):
             config["load"].pop(key, None)
         config["load"].update(concurrency=[1], requests=1)
+        if "repeats" in config["load"]:
+            config["load"]["repeats"] = 1
     return config

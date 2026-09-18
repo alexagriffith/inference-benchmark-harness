@@ -3,6 +3,7 @@
 import subprocess
 
 from .kubernetes import read, selector_text
+from .provenance import observed
 
 
 def current_condition(resource, conditions, kind):
@@ -11,6 +12,7 @@ def current_condition(resource, conditions, kind):
                  if item.get("type") == kind and item.get("observedGeneration") == generation), None)
 
 
+@observed("routing_inspection")
 def inspect_routing(config):
     scope = config["kubernetes"]
     routing = scope["routing"]

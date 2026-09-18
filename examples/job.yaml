@@ -14,6 +14,7 @@ spec:
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: benchmark
           image: registry.example.org/inference-benchmark-harness:0.1.0

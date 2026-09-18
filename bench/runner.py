@@ -10,9 +10,10 @@ import signal
 import subprocess
 import time
 
-from .config import file_digest, fingerprint, load_points, phase
+from .config import attempt_limit, attempt_prefix, file_digest, fingerprint, load_points, phase, repeat_count
 from .evidence import analyze, manifest, write_json
 from .preflight import verify
+from .provenance import artifact, operation, record, recording, timestamp
 
 
 def command(config, point, directory, aiperf):
@@ -48,17 +49,20 @@ def command(config, point, directory, aiperf):
 
 
 def event(root, code, **fields):
-    value = {"schema_version": 1, "timestamp": time.time(), "event": code, **fields}
+    when = timestamp()
+    value = {"schema_version": 1, "timestamp": when["timestamp_ns"] / 1e9, **when, "event": code, **fields}
     with (root / "events.jsonl").open("a") as stream:
         stream.write(json.dumps(value) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
+    record("event", **value)
 
 
 def run_child(args, directory, deadline, lock_fd):
     process = None
     code, reason = 1, None
-    started = time.time()
+    started = timestamp()
+    clock = time.monotonic_ns()
     try:
         with (directory / "aiperf.log").open("w") as log:
             process = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT,
@@ -72,24 +76,29 @@ def run_child(args, directory, deadline, lock_fd):
         code, reason = 127, "launch_failed"
     finally:
         if process is not None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            # A finished parent may still have descendants in its process group.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-    return {"start_unix": started, "end_unix": time.time(), "exit_code": code, "reason": reason}
+            for stop_signal in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(process.pid, stop_signal)
+                except ProcessLookupError:
+                    pass
+                except OSError as exc:
+                    code, reason = 125, "cleanup_failed"
+                    record("cleanup_failed", process_id=process.pid, signal=stop_signal,
+                           error_type=type(exc).__name__, errno=exc.errno)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    if stop_signal == signal.SIGKILL:
+                        code, reason = 125, "cleanup_failed"
+    finished = timestamp()
+    if (directory / "aiperf.log").exists():
+        artifact(directory / "aiperf.log", capture_window={"started": started, "finished": finished})
+    return {"start_unix": started["timestamp_ns"] / 1e9, "end_unix": finished["timestamp_ns"] / 1e9,
+            "started": started, "finished": finished, "duration_ns": time.monotonic_ns() - clock,
+            "exit_code": code, "reason": reason}
 
 
-def campaign(config, root, aiperf, resume=False):
+def campaign(config, root, aiperf, resume=False, config_acquisition=None):
     os.umask(0o077)
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=resume)
@@ -98,7 +107,10 @@ def campaign(config, root, aiperf, resume=False):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("A process still owns this campaign") from None
-        return run_locked(config, root, aiperf, resume, lock.fileno())
+        with recording(root), operation("campaign", resume=resume):
+            if config_acquisition:
+                record("config_acquisition", **config_acquisition)
+            return run_locked(config, root, aiperf, resume, lock.fileno())
 
 
 def run_locked(config, root, aiperf, resume, lock_fd):
@@ -119,85 +131,137 @@ def run_locked(config, root, aiperf, resume, lock_fd):
     if state["status"] == "complete":
         return state
     points = load_points(config)
+    repeats = repeat_count(config)
+    state.setdefault("next_repeat", 0)
+    state.setdefault("point_results", {})
     for index in range(state["next_point"], len(points)):
         point = points[index]
-        previous_attempts = list(root.glob(f"point-{index + 1:02d}-attempt-*"))
-        point_attempt = max((int(path.name.rsplit("-", 1)[1]) for path in previous_attempts), default=0) + 1
-        if len(previous_attempts) >= config["load"].get("max_attempts_per_point", 3):
-            state["status"] = "attempt_budget_exhausted"
-            write_json(root / "state.json", state)
-            event(root, "attempt_budget_exhausted", point=index + 1, retryable=False,
-                  action="Review the accumulated failures before planning another experiment")
-            return state
-        state["attempts"] += 1
-        directory = root / f"point-{index + 1:02d}-attempt-{point_attempt:03d}"
-        directory.mkdir()
-        checks = verify(config, aiperf)
-        if shutil.disk_usage(root).free < 64 * 1024 * 1024:
-            checks.append({"name": "storage", "status": "fail", "detail": "Less than 64 MiB free; choose durable storage with enough space for the planned run"})
-        write_json(directory / "preflight.json", checks)
-        if any(check["status"] == "fail" for check in checks):
-            state["status"] = "preflight_failed"
-            event(root, "preflight_failed", point=index + 1, attempt=directory.name, retryable=True, action="Correct the failed check, then resume; no inference was sent")
-            write_json(root / "state.json", state)
-            return state
-        point_config = copy.deepcopy(config)
-        if config["workload"]["type"] == "single_turn":
-            dataset = directory / "input.jsonl"
-            shutil.copyfile(config["workload"]["path"], dataset)
-            if file_digest(dataset) != config["workload"]["sha256"]:
-                state["status"] = "dataset_changed"
+        for repeat in range(state["next_repeat"], repeats):
+            prefix = attempt_prefix(index, repeat, repeats)
+            previous_attempts = list(root.glob(f"{prefix}-attempt-*"))
+            point_attempt = max((int(path.name.rsplit("-", 1)[1]) for path in previous_attempts), default=0) + 1
+            if len(previous_attempts) >= attempt_limit(config):
+                state["status"] = "attempt_budget_exhausted"
                 write_json(root / "state.json", state)
-                event(root, "dataset_changed", point=index + 1, attempt=directory.name, retryable=False,
-                      action="Restore the planned input or create a new experiment")
+                event(root, "attempt_budget_exhausted", point=index + 1, repeat=repeat + 1, retryable=False,
+                      action="Review the accumulated failures before planning another experiment")
                 return state
-            point_config["workload"]["path"] = str(dataset)
-        if config["endpoint"].get("api_key_env"):
-            env_name = config["endpoint"]["api_key_env"]
-            workload = point_config["workload"]
-            dataset = ({"type": "file", "format": "single_turn", "path": workload["path"]}
-                       if workload["type"] == "single_turn" else
-                       {"type": "synthetic", "isl": {"mean": workload["input_tokens"], "stddev": 0},
-                        "osl": {"mean": workload["output_tokens"], "stddev": 0}})
-            write_json(directory / "auth.yaml", {"schemaVersion": "2.0", "benchmark": {
-                "endpoint": {"api_key": "${" + env_name + "}"}, "dataset": dataset,
-                "phases": phase(config, point)}})
-        args = command(point_config, point, directory, aiperf)
-        write_json(directory / "command.json", args)
-        state["status"] = "running"
-        write_json(root / "state.json", state)
-        event(root, "point_started", point=index + 1, attempt=directory.name, load=phase(config, point))
-        execution = run_child(args, directory, config["load"]["deadline_seconds"], lock_fd)
-        write_json(directory / "execution.json", execution)
-        result = analyze(directory, config, execution)
-        if config.get("kubernetes"):
-            from .kubernetes import deployment_changes, inspect
-            after = inspect(config)
-            write_json(directory / "postflight.json", after)
-            changes = deployment_changes(checks, after)
-            if changes:
-                result["evidence"] = "invalid"
-                result["reasons"] = sorted(set(result["reasons"] + changes))
-                for goal in result["goals"]:
-                    goal["status"] = "unverified"
-        write_json(directory / "summary.json", result)
-        write_json(directory / "manifest.json", manifest(directory))
-        if result["evidence"] != "complete":
-            state["status"] = "evidence_invalid"
-            event(root, "point_invalid", point=index + 1, attempt=directory.name, retryable=False,
-                  reasons=result["reasons"], action="Inspect artifacts; deliberate resume creates a new attempt")
+            state["attempts"] += 1
+            directory = root / f"{prefix}-attempt-{point_attempt:03d}"
+            directory.mkdir()
+            state["status"] = "checking"
             write_json(root / "state.json", state)
-            return state
-        state["completed"].append(directory.name)
+            with operation("verify_attempt", attempt=directory.name):
+                checks = verify(config, aiperf)
+            if config.get("kubernetes") and state["completed"] and not any(c["status"] == "fail" for c in checks):
+                from .kubernetes import deployment_changes
+                baseline = json.loads((root / state["completed"][0] / "preflight.json").read_text())
+                if deployment_changes(baseline, checks):
+                    checks.append({"name": "campaign_identity", "status": "fail",
+                                   "detail": "Deployment identity changed since the first accepted repeat; restore the baseline or start a new campaign"})
+            if shutil.disk_usage(root).free < 64 * 1024 * 1024:
+                checks.append({"name": "storage", "status": "fail", "detail": "Less than 64 MiB free; choose durable storage with enough space for the planned run"})
+            write_json(directory / "preflight.json", checks)
+            if any(check["status"] == "fail" for check in checks):
+                state["status"] = "preflight_failed"
+                event(root, "preflight_failed", point=index + 1, repeat=repeat + 1, attempt=directory.name, retryable=True, action="Correct the failed check, then resume; no inference was sent")
+                write_json(root / "state.json", state)
+                return state
+            point_config = copy.deepcopy(config)
+            if config["workload"]["type"] == "single_turn":
+                dataset = directory / "input.jsonl"
+                with operation("dataset_acquisition", attempt=directory.name) as acquired:
+                    shutil.copyfile(config["workload"]["path"], dataset)
+                artifact(dataset, acquisition=acquired)
+                if file_digest(dataset) != config["workload"]["sha256"]:
+                    state["status"] = "dataset_changed"
+                    write_json(root / "state.json", state)
+                    event(root, "dataset_changed", point=index + 1, repeat=repeat + 1, attempt=directory.name, retryable=False,
+                          action="Restore the planned input or create a new experiment")
+                    return state
+                point_config["workload"]["path"] = str(dataset)
+            if config["endpoint"].get("api_key_env"):
+                env_name = config["endpoint"]["api_key_env"]
+                workload = point_config["workload"]
+                dataset = ({"type": "file", "format": "single_turn", "path": workload["path"]}
+                           if workload["type"] == "single_turn" else
+                           {"type": "synthetic", "isl": {"mean": workload["input_tokens"], "stddev": 0},
+                            "osl": {"mean": workload["output_tokens"], "stddev": 0}})
+                write_json(directory / "auth.yaml", {"schemaVersion": "2.0", "benchmark": {
+                    "endpoint": {"api_key": "${" + env_name + "}"}, "dataset": dataset,
+                    "phases": phase(config, point)}})
+            args = command(point_config, point, directory, aiperf)
+            write_json(directory / "command.json", args)
+            state["status"] = "running"
+            write_json(root / "state.json", state)
+            event(root, "point_started", point=index + 1, repeat=repeat + 1, attempt=directory.name, load=phase(config, point))
+            with operation("client_execution", attempt=directory.name):
+                execution = run_child(args, directory, config["load"]["deadline_seconds"], lock_fd)
+            write_json(directory / "execution.json", execution)
+            result = analyze(directory, config, execution)
+            if config.get("kubernetes"):
+                from .kubernetes import deployment_changes, inspect
+                with operation("postflight", attempt=directory.name):
+                    after = inspect(config)
+                write_json(directory / "postflight.json", after)
+                changes = deployment_changes(checks, after)
+                if changes:
+                    result["evidence"] = "invalid"
+                    result["reasons"] = sorted(set(result["reasons"] + changes))
+                    for goal in result["goals"]:
+                        goal["status"] = "unverified"
+            write_json(directory / "summary.json", result)
+            files = manifest(directory)
+            for name, digest in files.items():
+                if name.startswith("native/"):
+                    record("native_artifact_observed", artifact=str(directory.relative_to(root) / name),
+                           sha256=digest, bytes=(directory / name).stat().st_size)
+            write_json(directory / "manifest.json", files)
+            if result["evidence"] != "complete":
+                state["status"] = "evidence_invalid"
+                event(root, "point_invalid", point=index + 1, repeat=repeat + 1, attempt=directory.name, retryable=False,
+                      reasons=result["reasons"], action="Inspect artifacts; deliberate resume creates a new attempt")
+                write_json(root / "state.json", state)
+                return state
+            state["completed"].append(directory.name)
+            state["next_repeat"] = repeat + 1
+            missed = any(goal["status"] != "met" for goal in result["goals"])
+            outcome = "goal_not_met" if missed else "request_errors" if result["failed_requests"] else "ready"
+            previous = state["point_results"].get(str(index + 1), "ready")
+            state["point_results"][str(index + 1)] = (
+                "goal_not_met" if "goal_not_met" in (previous, outcome) else
+                "request_errors" if "request_errors" in (previous, outcome) else "ready")
+            state["status"] = "ready"
+            event(root, "repeat_completed", point=index + 1, repeat=repeat + 1,
+                  attempt=directory.name, result=outcome, retryable=False)
+            write_json(root / "state.json", state)
         state["next_point"] = index + 1
-        missed = any(goal["status"] != "met" for goal in result["goals"])
-        state["status"] = "goal_not_met" if missed else "request_errors" if result["failed_requests"] else "ready"
-        event(root, "point_completed", point=index + 1, attempt=directory.name, retryable=False,
-              result=state["status"], action="Keep this result; resume advances to the next point" if state["status"] != "ready" else "Continue")
+        state["next_repeat"] = 0
+        state["status"] = state["point_results"][str(index + 1)]
+        summaries = [json.loads((root / name / "summary.json").read_text())
+                     for name in state["completed"] if name.startswith(f"point-{index + 1:02d}-")]
+        write_json(root / f"point-{index + 1:02d}-repeats.json", {
+            "point": index + 1, "load": phase(config, point), "valid_repeats": len(summaries),
+            "planned_repeats": repeats, "outcome": state["status"],
+            "measurements": summaries,
+            "spread": repeat_spread(summaries)})
+        event(root, "point_completed", point=index + 1, repeats=repeats, retryable=False,
+              result=state["status"], action="Keep all repeats; resume advances to the next point" if state["status"] != "ready" else "Continue")
         write_json(root / "state.json", state)
         if state["status"] != "ready":
             return state
     state["status"] = "complete"
     write_json(root / "state.json", state)
-    event(root, "campaign_complete", points=len(state["completed"]))
+    event(root, "campaign_complete", points=len(points), valid_repeats=len(state["completed"]))
     return state
+
+
+def repeat_spread(summaries):
+    """Describe run-to-run variation; never average percentiles into a pooled one."""
+    result = {}
+    for metric in ("ttft_p95_ms", "latency_p95_ms", "request_throughput_rps", "error_fraction"):
+        values = [summary.get("measurements", {}).get(metric) for summary in summaries]
+        known = [value for value in values if value is not None]
+        result[metric] = {"per_repeat": values, "available_repeats": len(known),
+                          "min": min(known) if known else None, "max": max(known) if known else None}
+    return result

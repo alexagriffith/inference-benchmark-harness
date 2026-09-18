@@ -3,13 +3,13 @@ CONFIG ?= examples/benchmark.json
 RUN ?= /tmp/inference-benchmark-run
 AIPERF ?= aiperf
 
-.PHONY: help plan plan-smoke verify smoke sweep resume report test test-integration
+.PHONY: benchmark help plan plan-smoke verify smoke sweep resume report test test-integration
 help:
 	@echo 'plan             Print commands without network requests or writes'
 	@echo 'plan-smoke       Preview the one-request smoke and its budget'
 	@echo 'verify           Read endpoint and metrics; send no inference'
 	@echo 'smoke            Send one short request'
-	@echo 'sweep            Run configured concurrency or rate points sequentially'
+	@echo 'sweep/benchmark  Run configured points and repeats sequentially'
 	@echo 'resume           Continue a stopped campaign after reviewing its reason'
 	@echo 'report           Read saved results'
 	@echo 'test             Run contract tests without AIPerf or a cluster'
@@ -33,3 +33,5 @@ test:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
 test-integration:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tests/integration.py --aiperf "$(AIPERF)"
+
+benchmark: sweep
